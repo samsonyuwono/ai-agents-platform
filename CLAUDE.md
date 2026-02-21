@@ -167,31 +167,98 @@ Critical for avoiding bot detection:
 4. Save markdown output to `news/` folder
 5. Send formatted HTML email via Resend
 
-## Testing Approach
+## Python Best Practices
 
-**Test Infrastructure:**
-- pytest framework with 30+ passing unit tests
-- Test coverage: 100% on slug_utils, 97% on booking_parser
-- Tests located in `tests/unit/` and `tests/integration/`
-- Configuration: `pytest.ini`
+### Code Style
+- Python 3.9+ (system Python on macOS) — avoid 3.10+ syntax (match/case, `X | Y` unions)
+- Use type hints for function signatures (`def foo(name: str, count: int = 0) -> List[Dict]:`)
+- Prefer `Dict`, `List`, `Optional` from `typing` over built-in generics (3.9 compat)
+- Use f-strings for string formatting, never `.format()` or `%`
+- Docstrings on public classes and methods (triple-quote, one-liner or Google style)
 
-**Running Tests:**
+### Error Handling
+- Use specific exception types, not bare `except:` (existing browser client code uses bare excepts for resilience — don't extend that pattern to new code)
+- External API calls: catch specific errors (e.g., `anthropic.APIConnectionError`), log, and re-raise or return a meaningful error dict
+- Browser automation: bare excepts are acceptable only for individual element extraction within a loop where partial results are useful
+
+### Data Flow Conventions
+- Tool results returned to Claude should be structured dicts with `success` bool and descriptive keys
+- Include `config_id` or other downstream identifiers in search results so Claude can chain tool calls without redundant lookups
+- Use `|||` as the delimiter for composite IDs (e.g., `slug|||date|||time`)
+
+### Dependencies
+- All deps in `requirements.txt` — pin major versions
+- `python-dotenv` for env loading, `anthropic` for Claude API
+- `playwright` for browser automation (optional, only if `RESY_BROWSER_*` configured)
+- `resend` for email (optional, only if `RESEND_API_KEY` configured)
+
+## Testing
+
+### Running Tests
 ```bash
-pytest                    # All tests
+pytest                    # All tests with coverage (configured in pytest.ini)
 pytest tests/unit/ -v     # Unit tests only
-pytest --cov=utils --cov=config --cov-report=html  # With coverage
+pytest -k "test_slug"     # Run matching tests
+pytest --no-cov           # Skip coverage for faster runs
 ```
 
-**Test Organization:**
-- `tests/unit/test_booking_parser.py` - Natural language parsing tests
-- `tests/unit/test_slug_utils.py` - Slug conversion tests
-- `tests/unit/test_settings.py` - Configuration validation tests
+### Test Organization
+- `tests/unit/` — fast, no external deps, mock all APIs and I/O
+- `tests/integration/` — may require API keys or browser (not run in CI by default)
+- One test file per module: `tests/unit/test_<module>.py`
+- Test classes group related tests: `class TestClassName:` mirroring the unit under test
 
-**Manual Testing:**
+### Test Conventions
+- **Mocking:** Use `unittest.mock.patch` as decorators on test methods, patching at the import site (e.g., `@patch('agents.base_agent.anthropic.Anthropic')`)
+- **Fixtures:** Use `@pytest.fixture` on the test class for shared setup (see `TestReservationStore.store` for temp file pattern)
+- **Assertions:** Plain `assert` statements — no `self.assertEqual`. Use `pytest.raises` for expected exceptions
+- **Naming:** `test_<what>_<scenario>` (e.g., `test_init_no_api_key_raises`, `test_format_results_with_time_slots`)
+- **Mirror logic tests:** For formatting/handler code, tests can mirror the production logic inline rather than importing the agent (see `TestCuisineSearchHandler`) — keeps tests decoupled from agent initialization
+
+### When to Write Tests
+- New utility functions in `utils/`: always add unit tests
+- New agent tool handlers: add tests for result formatting and edge cases
+- Bug fixes: add a regression test that would have caught the bug
+- Browser scraping logic: test the parsing/extraction separately from Playwright calls
+
+### Coverage
+- Coverage runs automatically via `pytest.ini` (`--cov=. --cov-report=term-missing`)
+- Target: 90%+ on `utils/` and `config/`, best-effort on `agents/` (hard to unit-test agentic loops)
+- Pure logic modules (slug_utils, booking_parser) should stay at ~100%
+
+### Manual Testing
 - Use `.env` file for API keys (never commit)
 - Research agent has interactive chat mode for manual testing
 - News digest saves to `news/` folder for inspection
 - Logs are written to `logs/` folder for cron jobs
+
+## Development Workflow
+
+### Making Changes
+1. Read and understand the existing code before modifying
+2. Make the change
+3. Run `pytest` — all tests must pass before considering a change complete
+4. If adding new functionality, add tests in the same PR
+
+### Adding a New Utility
+1. Create `utils/your_module.py`
+2. Create `tests/unit/test_your_module.py` with tests
+3. Update `utils/__init__.py` if the module should be importable from the package
+4. Document in CLAUDE.md under **Shared Utilities**
+
+### Adding a New Agent
+1. Create agent class in `agents/your_agent.py` (inherit from `BaseAgent`)
+2. Create runner script in `scripts/run_your_agent.py`
+3. Create `tests/unit/test_your_agent.py` — test init, tool execution, result formatting
+4. Update `agents/__init__.py`
+5. Document in CLAUDE.md under **Architecture** and add run command to **Development Commands**
+
+### Updating CLAUDE.md
+Keep this file current as the repo grows:
+- New agents/utilities: add to Architecture section
+- New test files: reflected in test organization
+- New commands: add to Development Commands
+- Changed patterns: update the relevant conventions section
 
 ## Cron Automation
 
