@@ -3,6 +3,7 @@ Resy Browser Automation Client
 Uses Playwright to interact with Resy website when API is unreliable.
 """
 
+import logging
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
 import time
 import random
@@ -11,6 +12,21 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from config.settings import Settings
 from utils.slug_utils import normalize_slug
+
+logger = logging.getLogger(__name__)
+
+# Location code mappings - short codes to full Resy location names
+LOCATION_CODES = {
+    'ny': 'new-york-ny',
+    'nyc': 'new-york-ny',
+    'sf': 'san-francisco-ca',
+    'la': 'los-angeles-ca',
+}
+
+
+def resolve_location(location: str) -> str:
+    """Resolve a short location code to its full Resy location name."""
+    return LOCATION_CODES.get(location.lower(), location.lower())
 
 
 class ResyBrowserClient:
@@ -618,18 +634,7 @@ class ResyBrowserClient:
         try:
             # Navigate to venue page
             # Try modern format first (with /venues/)
-            location_lower = location.lower()
-
-            # Map common short codes to full location names
-            location_map = {
-                'ny': 'new-york-ny',
-                'nyc': 'new-york-ny',
-                'sf': 'san-francisco-ca',
-                'la': 'los-angeles-ca',
-            }
-
-            # Use mapped location if available, otherwise use as-is
-            full_location = location_map.get(location_lower, location_lower)
+            full_location = resolve_location(location)
 
             # Try modern URL format with /venues/ first
             url = f"https://resy.com/cities/{full_location}/venues/{url_slug}"
@@ -725,16 +730,7 @@ class ResyBrowserClient:
 
             # Use default location from settings and map to full location name
             location = Settings.RESY_DEFAULT_LOCATION
-
-            # Map common short codes to full location names
-            location_map = {
-                'ny': 'new-york-ny',
-                'nyc': 'new-york-ny',
-                'sf': 'san-francisco-ca',
-                'la': 'los-angeles-ca',
-            }
-
-            full_location = location_map.get(location.lower(), location.lower())
+            full_location = resolve_location(location)
 
             # Navigate to venue page with date and party size parameters (modern format with /venues/)
             url = f"https://resy.com/cities/{full_location}/venues/{url_slug}?date={date}&seats={party_size}"
@@ -919,16 +915,7 @@ class ResyBrowserClient:
 
             # Navigate to venue page with date and party size (use correct URL format)
             location = Settings.RESY_DEFAULT_LOCATION
-
-            # Map common short codes to full location names
-            location_map = {
-                'ny': 'new-york-ny',
-                'nyc': 'new-york-ny',
-                'sf': 'san-francisco-ca',
-                'la': 'los-angeles-ca',
-            }
-
-            full_location = location_map.get(location.lower(), location.lower())
+            full_location = resolve_location(location)
             url = f"https://resy.com/cities/{full_location}/venues/{venue_slug}?date={date}&seats={party_size}"
 
             # Check if we're already on this venue page with same date/seats
@@ -1378,9 +1365,9 @@ class ResyBrowserClient:
                 try:
                     # Common patterns for confirmation numbers
                     conf_patterns = [
-                        'text=/Confirmation.*#\s*(\w+)/',
-                        'text=/Reference.*#\s*(\w+)/',
-                        'text=/Booking.*#\s*(\w+)/'
+                        r'text=/Confirmation.*#\s*(\w+)/',
+                        r'text=/Reference.*#\s*(\w+)/',
+                        r'text=/Booking.*#\s*(\w+)/'
                     ]
 
                     for pattern in conf_patterns:

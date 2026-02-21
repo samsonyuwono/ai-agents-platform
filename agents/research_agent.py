@@ -1,42 +1,28 @@
-#!/usr/bin/env env python3
+#!/usr/bin/env python3
 """
 Simple AI Research Agent
 A basic but functional agent that can search the web and answer questions.
 """
 
-import anthropic
-import os
 import json
-from datetime import datetime
-from dotenv import load_dotenv
+import logging
 
-# Load environment variables from .env file
-load_dotenv()
+from agents.base_agent import BaseAgent
+from config.settings import Settings
 
-class ResearchAgent:
+logger = logging.getLogger(__name__)
+
+
+class ResearchAgent(BaseAgent):
     def __init__(self, api_key=None):
         """Initialize the agent with an Anthropic API key."""
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not self.api_key:
-            raise ValueError("Please set ANTHROPIC_API_KEY environment variable or pass api_key")
-
-        self.client = anthropic.Anthropic(api_key=self.api_key)
-        self.conversation_history = []
-        self.model = "claude-sonnet-4-20250514"
-
-    def add_to_history(self, role, content):
-        """Add a message to conversation history."""
-        self.conversation_history.append({
-            "role": role,
-            "content": content
-        })
+        super().__init__(api_key=api_key)
 
     def search_web(self, query):
         """Search the web using Brave Search API or mock results."""
-        print(f"  🔍 Searching for: {query}")
+        logger.info("Searching for: %s", query)
 
-        # Check if Brave API key is available
-        brave_api_key = os.environ.get("BRAVE_API_KEY")
+        brave_api_key = Settings.BRAVE_API_KEY
 
         if brave_api_key:
             # Use Brave Search API
@@ -71,8 +57,8 @@ class ResearchAgent:
                     "source": "Brave Search API"
                 }
             except Exception as e:
-                print(f"  ⚠️  Error with Brave API: {e}")
-                print(f"  📝 Falling back to mock search")
+                logger.warning("Error with Brave API: %s", e)
+                logger.info("Falling back to mock search")
 
         # Fall back to mock results if no API key or error
         return {
@@ -99,43 +85,41 @@ class ResearchAgent:
         Run the agent with a user message.
         The agent will loop until it provides a final answer or hits max iterations.
         """
-        print(f"\n{'='*60}")
-        print(f"🤖 Agent received: {user_message}")
-        print(f"{'='*60}\n")
+        logger.info("Agent received: %s", user_message)
 
         # Add user message to history
         self.add_to_history("user", user_message)
+
+        tools = [
+            {
+                "name": "web_search",
+                "description": "Search the web for current information. Use this when you need up-to-date information or facts you don't know.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "The search query to look up"
+                        }
+                    },
+                    "required": ["query"]
+                }
+            }
+        ]
 
         iteration = 0
 
         while iteration < max_iterations:
             iteration += 1
-            print(f"--- Iteration {iteration} ---")
+            logger.debug("Iteration %d", iteration)
 
             # Call Claude with tool definitions
-            response = self.client.messages.create(
-                model=self.model,
-                max_tokens=4096,
-                tools=[
-                    {
-                        "name": "web_search",
-                        "description": "Search the web for current information. Use this when you need up-to-date information or facts you don't know.",
-                        "input_schema": {
-                            "type": "object",
-                            "properties": {
-                                "query": {
-                                    "type": "string",
-                                    "description": "The search query to look up"
-                                }
-                            },
-                            "required": ["query"]
-                        }
-                    }
-                ],
-                messages=self.conversation_history
+            response = self.call_claude(
+                messages=self.conversation_history,
+                tools=tools
             )
 
-            print(f"  Stop reason: {response.stop_reason}")
+            logger.debug("Stop reason: %s", response.stop_reason)
 
             # Check if Claude wants to use a tool
             if response.stop_reason == "tool_use":
@@ -150,13 +134,13 @@ class ResearchAgent:
                         tool_input = content_block.input
                         tool_use_id = content_block.id
 
-                        print(f"  🔧 Using tool: {tool_name}")
-                        print(f"     Input: {json.dumps(tool_input, indent=2)}")
+                        logger.info("Using tool: %s", tool_name)
+                        logger.debug("Tool input: %s", json.dumps(tool_input, indent=2))
 
                         # Execute the tool
                         result = self.execute_tool(tool_name, tool_input)
 
-                        print(f"     Result: {json.dumps(result, indent=2)[:200]}...")
+                        logger.debug("Tool result: %s...", json.dumps(result, indent=2)[:200])
 
                         tool_results.append({
                             "type": "tool_result",
@@ -177,26 +161,21 @@ class ResearchAgent:
                     if hasattr(content_block, "text"):
                         final_answer += content_block.text
 
-                print(f"\n{'='*60}")
-                print(f"✅ Final Answer:")
-                print(f"{'='*60}")
-                print(final_answer)
-                print(f"{'='*60}\n")
-
+                logger.info("Final answer generated")
                 return final_answer
 
             else:
                 # Unexpected stop reason
-                print(f"⚠️  Unexpected stop reason: {response.stop_reason}")
+                logger.warning("Unexpected stop reason: %s", response.stop_reason)
                 break
 
-        print(f"⚠️  Max iterations ({max_iterations}) reached")
+        logger.warning("Max iterations (%d) reached", max_iterations)
         return "I apologize, but I've reached my maximum thinking iterations. Please try rephrasing your question."
 
     def chat(self):
         """Interactive chat mode."""
         print("\n" + "="*60)
-        print("🤖 Research Agent - Interactive Mode")
+        print("Research Agent - Interactive Mode")
         print("="*60)
         print("Type 'quit' or 'exit' to stop")
         print("Type 'clear' to clear conversation history")
@@ -207,57 +186,47 @@ class ResearchAgent:
                 user_input = input("You: ").strip()
 
                 if user_input.lower() in ['quit', 'exit']:
-                    print("👋 Goodbye!")
+                    print("Goodbye!")
                     break
 
                 if user_input.lower() == 'clear':
                     self.conversation_history = []
-                    print("🗑️  Conversation history cleared\n")
+                    print("Conversation history cleared\n")
                     continue
 
                 if not user_input:
                     continue
 
-                self.run(user_input)
+                answer = self.run(user_input)
+                print(f"\n{'='*60}")
+                print(answer)
+                print(f"{'='*60}\n")
 
             except KeyboardInterrupt:
-                print("\n👋 Goodbye!")
+                print("\nGoodbye!")
                 break
             except Exception as e:
-                print(f"❌ Error: {e}")
+                logger.error("Error: %s", e)
+                print(f"Error: {e}")
 
 
 def main():
     """Main function to run the agent."""
+    logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
+
     print("""
-╔══════════════════════════════════════════════════════════╗
-║           Simple AI Research Agent                       ║
-║           Built with Claude by Anthropic                 ║
-╚══════════════════════════════════════════════════════════╝
+Research Agent
+Built with Claude by Anthropic
 
 This agent can:
-  • Answer questions using its knowledge
-  • Search the web for current information (mocked for demo)
-  • Maintain conversation context
-
-To make web search real, integrate a search API like:
-  - Google Custom Search API
-  - Brave Search API
-  - Bing Search API
+  - Answer questions using its knowledge
+  - Search the web for current information
+  - Maintain conversation context
 """)
-
-    # Check for API key
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("⚠️  ANTHROPIC_API_KEY not found in environment variables")
-        api_key = input("Enter your Anthropic API key (or press Enter to quit): ").strip()
-        if not api_key:
-            print("No API key provided. Exiting.")
-            return
 
     # Create and run the agent
     try:
-        agent = ResearchAgent(api_key=api_key)
+        agent = ResearchAgent()
 
         # You can either use chat mode or run single queries
         mode = input("\nChoose mode:\n  1. Interactive chat\n  2. Single query\nEnter 1 or 2: ").strip()
@@ -267,10 +236,13 @@ To make web search real, integrate a search API like:
         else:
             query = input("\nWhat would you like to know? ")
             if query:
-                agent.run(query)
+                answer = agent.run(query)
+                print(f"\n{'='*60}")
+                print(answer)
+                print(f"{'='*60}\n")
 
     except Exception as e:
-        print(f"❌ Error initializing agent: {e}")
+        logger.error("Error initializing agent: %s", e)
 
 
 if __name__ == "__main__":

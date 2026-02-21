@@ -3,8 +3,12 @@ Web Search Utilities
 Handles web search functionality using various APIs.
 """
 
+import logging
+
 import requests
 from config.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class BraveSearch:
@@ -28,7 +32,7 @@ class BraveSearch:
         Returns:
             List of search results with title, snippet, url, and age
         """
-        print(f"  🔍 Searching: {query}")
+        logger.info("Searching: %s", query)
 
         try:
             url = "https://api.search.brave.com/res/v1/web/search"
@@ -56,9 +60,9 @@ class BraveSearch:
                     "age": item.get("age", "")
                 })
 
-            print(f"    ✓ Found {len(results)} results")
+            logger.info("Found %d results", len(results))
             return results
 
         except Exception as e:
-            print(f"    ✗ Search error: {e}")
+            logger.error("Search error: %s", e)
             return []

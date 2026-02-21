@@ -3,9 +3,12 @@ Email Sending Utilities
 Handles email functionality using various email services.
 """
 
+import logging
 import re
 from datetime import datetime
 from config.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class EmailSender:
@@ -52,11 +55,11 @@ class EmailSender:
             }
 
             response = resend.Emails.send(params)
-            print(f"✅ Email sent! (ID: {response['id']})")
+            logger.info("Email sent! (ID: %s)", response['id'])
             return True
 
         except Exception as e:
-            print(f"❌ Email error: {e}")
+            logger.error("Email error: %s", e)
             return False
 
     def _create_html_email(self, markdown_content, title):

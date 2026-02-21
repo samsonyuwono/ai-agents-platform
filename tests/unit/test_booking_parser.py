@@ -1,9 +1,11 @@
 """Unit tests for booking request parsing."""
 
 import pytest
+from freezegun import freeze_time
 from utils.booking_parser import BookingRequestParser, parse_booking_request
 
 
+@freeze_time("2026-02-15")
 class TestBookingRequestParser:
     """Test booking request parsing."""
 
@@ -80,8 +82,8 @@ class TestBookingRequestParser:
     @pytest.mark.parametrize("month_name,expected_month,expected_year", [
         ("Jan", "01", "2027"),  # Past month, uses next year
         ("January", "01", "2027"),  # Past month, uses next year
-        ("Feb", "02", "2026"),  # Current month
-        ("February", "02", "2026"),  # Current month
+        ("Feb", "02", "2026"),  # Current month, day 18 is in the future
+        ("February", "02", "2026"),  # Current month, day 18 is in the future
         ("Dec", "12", "2026"),  # Future month
         ("December", "12", "2026"),  # Future month
     ])
@@ -90,3 +92,9 @@ class TestBookingRequestParser:
         result = parse_booking_request(f"Temple Court on {month_name} 18 at 6pm for 2")
 
         assert result['date'].startswith(f"{expected_year}-{expected_month}")
+
+    def test_parse_past_date_rolls_to_next_year(self):
+        """Test that a date earlier in the current month rolls to next year."""
+        # Feb 10 is in the past (frozen at Feb 15), should roll to 2027
+        result = parse_booking_request("Temple Court on Feb 10 at 6pm for 2")
+        assert result['date'] == '2027-02-10'

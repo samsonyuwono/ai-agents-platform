@@ -93,10 +93,10 @@ class BookingRequestParser:
 
             # Check if date is in the past, if so use next year
             try:
-                date_obj = datetime.strptime(date, '%Y-%m-%d')
-                if date_obj < datetime.now():
+                date_obj = datetime.strptime(date, '%Y-%m-%d').date()
+                if date_obj < datetime.now().date():
                     date = f"{current_year + 1}-{month}-{day}"
-            except:
+            except ValueError:
                 pass
 
             return date

@@ -3,8 +3,12 @@ Base Agent Class
 Foundation for all AI agents with common functionality.
 """
 
+import logging
+
 import anthropic
 from config.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class BaseAgent:
@@ -50,6 +54,10 @@ class BaseAgent:
 
         Returns:
             API response object
+
+        Raises:
+            anthropic.APIConnectionError: If connection to API fails
+            anthropic.APIStatusError: If API returns an error status
         """
         if isinstance(messages, str):
             messages = [{"role": "user", "content": messages}]
@@ -66,4 +74,11 @@ class BaseAgent:
         if system:
             params["system"] = system
 
-        return self.client.messages.create(**params)
+        try:
+            return self.client.messages.create(**params)
+        except anthropic.APIConnectionError as e:
+            logger.error("Failed to connect to Anthropic API: %s", e)
+            raise
+        except anthropic.APIStatusError as e:
+            logger.error("Anthropic API error (status %d): %s", e.status_code, e.message)
+            raise

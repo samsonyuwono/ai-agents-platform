@@ -4,7 +4,11 @@ Interactive agent for making restaurant reservations via Resy.
 """
 
 import json
+import logging
+from datetime import datetime
 from agents.base_agent import BaseAgent
+
+logger = logging.getLogger(__name__)
 from utils.resy_client import ResyClient
 from utils.reservation_store import ReservationStore
 from utils.email_sender import EmailSender
@@ -36,23 +40,25 @@ class ReservationAgent(BaseAgent):
             self.email_sender = None
 
         # System prompt with date parsing guidance
-        self.system_prompt = """You are a helpful restaurant reservation assistant.
+        today = datetime.now()
+        today_str = today.strftime("%B %d, %Y")
+        current_year = today.year
+        self.system_prompt = f"""You are a helpful restaurant reservation assistant.
 
 CRITICAL DATE PARSING RULES:
-- Today's date is February 16, 2026
-- Current year is 2026
+- Today's date is {today_str}
+- Current year is {current_year}
 - When parsing dates:
-  * If user says "Feb 25" or "February 25" without a year, assume 2026
-  * If user says "Wednesday Feb 25th", check which year has Feb 25 on a Wednesday near current date and use 2026
-  * Always use YYYY-MM-DD format (e.g., "2026-02-25")
-  * NEVER use past years (2024, 2025) for future dates
+  * If user says "Feb 25" or "February 25" without a year, assume {current_year}
+  * If user says "Wednesday Feb 25th", check which year has Feb 25 on a Wednesday near current date and use {current_year}
+  * Always use YYYY-MM-DD format (e.g., "{current_year}-02-25")
+  * NEVER use past years for future dates
   * If a date in the current month has already passed, assume next year
 
 Examples:
-- "Feb 25" → "2026-02-25"
-- "Wednesday Feb 18th" → "2026-02-18" (current year)
-- "March 1st" → "2026-03-01"
-- "next Wednesday" → calculate from today (Feb 16, 2026)
+- "Feb 25" → "{current_year}-02-25"
+- "March 1st" → "{current_year}-03-01"
+- "next Wednesday" → calculate from today ({today_str})
 
 When making reservations:
 1. Search for the restaurant first
@@ -147,7 +153,7 @@ When making reservations:
         Returns:
             Tool execution result as dictionary
         """
-        print(f"\n🔧 Executing: {tool_name}")
+        logger.info("Executing: %s", tool_name)
 
         if tool_name == "search_resy_restaurants":
             results = self.resy_client.search_venues(
@@ -304,9 +310,7 @@ Your reservation has been successfully booked.
         Returns:
             Final response from the agent
         """
-        print(f"\n{'='*60}")
-        print(f"🤖 Reservation Agent")
-        print(f"{'='*60}\n")
+        logger.info("Reservation Agent processing request")
 
         # Add user message to history
         self.add_to_history("user", user_message)
@@ -314,7 +318,7 @@ Your reservation has been successfully booked.
         iteration = 0
         while iteration < max_iterations:
             iteration += 1
-            print(f"\n--- Thinking (iteration {iteration}) ---")
+            logger.debug("Thinking (iteration %d)", iteration)
 
             # Call Claude with tool definitions and system prompt
             response = self.call_claude(
@@ -323,7 +327,7 @@ Your reservation has been successfully booked.
                 system=self.system_prompt
             )
 
-            print(f"  Stop reason: {response.stop_reason}")
+            logger.debug("Stop reason: %s", response.stop_reason)
 
             if response.stop_reason == "tool_use":
                 # Add Claude's response to history
@@ -337,7 +341,7 @@ Your reservation has been successfully booked.
                         tool_input = content_block.input
                         tool_use_id = content_block.id
 
-                        print(f"  🔧 Using tool: {tool_name}")
+                        logger.info("Using tool: %s", tool_name)
 
                         # Execute the tool
                         result = self.execute_tool(tool_name, tool_input)
@@ -361,20 +365,15 @@ Your reservation has been successfully booked.
                     if hasattr(content_block, "text"):
                         final_answer += content_block.text
 
-                print(f"\n{'='*60}")
-                print(f"✅ Response:")
-                print(f"{'='*60}\n")
-                print(final_answer)
-                print(f"\n{'='*60}\n")
-
+                logger.info("Final response generated")
                 return final_answer
 
             else:
                 # Unexpected stop reason
-                print(f"⚠️  Unexpected stop reason: {response.stop_reason}")
+                logger.warning("Unexpected stop reason: %s", response.stop_reason)
                 break
 
-        print(f"⚠️  Max iterations ({max_iterations}) reached")
+        logger.warning("Max iterations (%d) reached", max_iterations)
         return "I apologize, but I've reached my maximum thinking iterations. Please try rephrasing your request."
 
     def chat(self):
@@ -415,4 +414,5 @@ Your reservation has been successfully booked.
                 print("\n👋 Goodbye!")
                 break
             except Exception as e:
-                print(f"❌ Error: {e}")
+                logger.error("Error: %s", e)
+                print(f"Error: {e}")

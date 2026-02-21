@@ -4,11 +4,14 @@ Handles interaction with the Resy API for restaurant reservations.
 Includes anti-bot detection measures.
 """
 
+import logging
 import requests
 import time
 import random
 from typing import List, Dict, Optional
 from config.settings import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class ResyClient:
@@ -50,7 +53,7 @@ class ResyClient:
             # Add random jitter (0.5-1.5 seconds) to look more human
             jitter = random.uniform(0.5, 1.5)
             sleep_time = (self.min_delay_seconds - time_since_last_request) + jitter
-            print(f"  ⏳ Rate limiting: waiting {sleep_time:.1f}s...")
+            logger.debug("Rate limiting: waiting %.1fs...", sleep_time)
             time.sleep(sleep_time)
 
         self.last_request_time = time.time()
@@ -85,17 +88,16 @@ class ResyClient:
         kwargs['headers'] = headers
 
         try:
-            # Debug: print full request URL
             if 'params' in kwargs:
                 from urllib.parse import urlencode
                 debug_url = f"{url}?{urlencode(kwargs['params'])}"
-                print(f"    DEBUG: Requesting {debug_url}")
+                logger.debug("Requesting %s", debug_url)
 
             response = self.session.request(method, url, **kwargs)
 
             # Check for rate limiting
             if response.status_code == 429:
-                print("  ⚠️  Rate limited by Resy. Waiting 60 seconds...")
+                logger.warning("Rate limited by Resy. Waiting 60 seconds...")
                 time.sleep(60)
                 # Retry once
                 response = self.session.request(method, url, **kwargs)
@@ -124,7 +126,7 @@ class ResyClient:
         Returns:
             Venue dictionary with id, name, and details
         """
-        print(f"  🔍 Looking up venue: {url_slug}")
+        logger.info("Looking up venue: %s", url_slug)
 
         params = {
             'url_slug': url_slug,
@@ -134,12 +136,11 @@ class ResyClient:
         try:
             response = self._make_request('GET', '/3/venue', params=params)
 
-            # Debug: check response type
-            print(f"    DEBUG: response type = {type(response)}")
+            logger.debug("Response type: %s", type(response))
 
             # Check if response is what we expect
             if not isinstance(response, dict):
-                print(f"    ✗ Unexpected response type: {type(response)}")
+                logger.warning("Unexpected response type: %s", type(response))
                 return None
 
             # Safely extract venue info
@@ -161,13 +162,11 @@ class ResyClient:
                 'max_party_size': response.get('max_party_size'),
             }
 
-            print(f"    ✓ Found: {venue_info['name']} (ID: {venue_info['id']})")
+            logger.info("Found: %s (ID: %s)", venue_info['name'], venue_info['id'])
             return venue_info
 
         except Exception as e:
-            print(f"    ✗ Venue lookup failed: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("Venue lookup failed: %s", e)
             return None
 
     def search_venues(self, query: str, location: Optional[str] = None, lat: Optional[float] = None, long: Optional[float] = None) -> List[Dict]:
@@ -183,7 +182,7 @@ class ResyClient:
         Returns:
             List with single venue if found, empty list otherwise
         """
-        print(f"  🔍 Searching Resy for: {query}")
+        logger.info("Searching Resy for: %s", query)
 
         # Convert query to URL slug format
         url_slug = query.lower().replace(' ', '-').replace("'", '')
@@ -195,8 +194,7 @@ class ResyClient:
         if venue:
             return [venue]
         else:
-            print(f"    💡 Tip: Provide the exact restaurant slug from Resy URL")
-            print(f"       Example: 'temple-court' from resy.com/cities/ny/temple-court")
+            logger.info("Tip: Provide the exact restaurant slug from Resy URL")
             return []
 
     def get_availability(self, venue_id: str, date: str, party_size: int = 2) -> List[Dict]:
@@ -211,7 +209,7 @@ class ResyClient:
         Returns:
             List of available time slots with slot details
         """
-        print(f"  📅 Checking availability for venue {venue_id} on {date} for {party_size} people")
+        logger.info("Checking availability for venue %s on %s for %d people", venue_id, date, party_size)
 
         params = {
             'lat': 0,
@@ -228,7 +226,7 @@ class ResyClient:
             results = response.get('results', [])
 
             if not results:
-                print(f"    ✗ No availability found")
+                logger.info("No availability found")
                 return []
 
             # Extract available time slots from configs
@@ -247,11 +245,11 @@ class ResyClient:
                         'venue_name': venue_info.get('name')
                     })
 
-            print(f"    ✓ Found {len(available_slots)} available slots")
+            logger.info("Found %d available slots", len(available_slots))
             return available_slots
 
         except Exception as e:
-            print(f"    ✗ Availability check failed: {e}")
+            logger.error("Availability check failed: %s", e)
             return []
 
     def get_booking_details(self, config_id: str, date: str, party_size: int) -> Optional[Dict]:
@@ -277,7 +275,7 @@ class ResyClient:
             return response
 
         except Exception as e:
-            print(f"    ✗ Failed to get booking details: {e}")
+            logger.error("Failed to get booking details: %s", e)
             return None
 
     def make_reservation(self, config_id: str, date: str, party_size: int, payment_method_id: Optional[str] = None) -> Dict:
@@ -298,7 +296,7 @@ class ResyClient:
         Raises:
             Exception: If reservation fails
         """
-        print(f"  🎫 Attempting to book reservation...")
+        logger.info("Attempting to book reservation...")
 
         payment_method = payment_method_id or Settings.RESY_PAYMENT_METHOD_ID
 
@@ -330,8 +328,7 @@ class ResyClient:
             reservation_id = response.get('reservation_id')
             resy_token = response.get('resy_token')
 
-            print(f"    ✅ Reservation successful!")
-            print(f"       Confirmation: {reservation_id}")
+            logger.info("Reservation successful! Confirmation: %s", reservation_id)
 
             return {
                 'success': True,
@@ -343,7 +340,7 @@ class ResyClient:
             }
 
         except Exception as e:
-            print(f"    ✗ Reservation failed: {e}")
+            logger.error("Reservation failed: %s", e)
             return {
                 'success': False,
                 'error': str(e)
@@ -375,7 +372,7 @@ class ResyClient:
             return formatted_reservations
 
         except Exception as e:
-            print(f"    ✗ Failed to get reservations: {e}")
+            logger.error("Failed to get reservations: %s", e)
             return []
 
     def cancel_reservation(self, resy_token: str) -> bool:
@@ -392,9 +389,9 @@ class ResyClient:
             payload = {'resy_token': resy_token}
             self._make_request('POST', '/3/cancel', json=payload)
 
-            print(f"    ✅ Reservation cancelled")
+            logger.info("Reservation cancelled")
             return True
 
         except Exception as e:
-            print(f"    ✗ Cancellation failed: {e}")
+            logger.error("Cancellation failed: %s", e)
             return False
