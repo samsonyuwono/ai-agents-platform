@@ -601,8 +601,8 @@ class ResyBrowserClient:
         """
         print(f"  🔍 Searching Resy for: {query}")
 
-        # Convert query to URL slug format (simple conversion)
-        url_slug = query.lower().replace(' ', '-').replace("'", '')
+        # Convert query to URL slug format using proper normalization
+        url_slug = normalize_slug(query)
         location_code = (location or 'ny').lower()
 
         # Try to get venue by slug
@@ -613,6 +613,213 @@ class ResyBrowserClient:
         else:
             print(f"    💡 Tip: Provide the exact restaurant slug from Resy URL")
             print(f"       Example: 'temple-court' from resy.com/cities/ny/temple-court")
+            return []
+
+    def search_by_cuisine(self, cuisine=None, neighborhood=None, location='ny',
+                          date=None, party_size=2) -> List[Dict]:
+        """
+        Browse restaurants on Resy by cuisine type and/or neighborhood.
+
+        Uses Resy's search page with faceted URLs to discover restaurants
+        and their available time slots.
+
+        Args:
+            cuisine: Cuisine type (e.g., 'Japanese', 'Italian', 'Chinese')
+            neighborhood: Neighborhood name (e.g., 'Soho', 'West Village')
+            location: City code (default: 'ny')
+            date: Date in YYYY-MM-DD format (defaults to today)
+            party_size: Number of guests (default: 2)
+
+        Returns:
+            List of venue dicts with name, slug, rating, cuisine, neighborhood,
+            and available_times
+        """
+        from datetime import datetime as dt
+
+        if not date:
+            date = dt.now().strftime('%Y-%m-%d')
+
+        print(f"  🔍 Searching Resy by cuisine/neighborhood...")
+        if cuisine:
+            print(f"     Cuisine: {cuisine}")
+        if neighborhood:
+            print(f"     Neighborhood: {neighborhood}")
+        print(f"     Date: {date}, Party size: {party_size}")
+
+        self._ensure_authenticated()
+        self._rate_limit()
+
+        try:
+            # Build search URL
+            full_location = resolve_location(location)
+            url = f"https://resy.com/cities/{full_location}/search?seats={party_size}&date={date}"
+
+            if cuisine:
+                url += f"&facet=cuisine:{cuisine}"
+            # Note: neighborhood facet removed — Resy's facet=neighborhood is unreliable
+            # (doesn't work for boroughs like Manhattan/Brooklyn). The neighborhood param
+            # is still accepted and logged for user context.
+
+            print(f"     Navigating to: {url}")
+            self.page.goto(url, wait_until='load', timeout=30000)
+            self._add_human_behavior(self.page)
+
+            # Wait for venue cards to appear in the DOM
+            print(f"     Waiting for search results to load...")
+            try:
+                self.page.wait_for_function(
+                    """() => {
+                        const links = document.querySelectorAll('a[href*="/venues/"]');
+                        return links.length > 0;
+                    }""",
+                    timeout=15000
+                )
+                time.sleep(2)  # Additional buffer for all cards to render
+                print(f"     ✓ Search results loaded")
+            except Exception as e:
+                print(f"     ⚠️  Timeout waiting for results: {e}")
+                # Continue anyway - may have partial results or none
+
+            # Scrape venue cards from search results
+            venues = []
+
+            # Get all venue links to identify cards
+            venue_links = self.page.locator('a[href*="/venues/"]').all()
+            print(f"     Found {len(venue_links)} venue links")
+
+            seen_slugs = set()
+            for link in venue_links[:10]:  # Limit to first 10 results
+                try:
+                    href = link.get_attribute('href') or ''
+
+                    # Extract slug from href (e.g., /cities/new-york-ny/venues/peking-duck-house)
+                    slug = None
+                    if '/venues/' in href:
+                        slug = href.split('/venues/')[-1].split('?')[0].strip('/')
+
+                    if not slug or slug in seen_slugs:
+                        continue
+                    seen_slugs.add(slug)
+
+                    # Get the venue name from the link text
+                    name = link.inner_text().strip()
+                    if not name:
+                        continue
+
+                    # Try to get the parent card element for additional info
+                    card = link
+                    rating = None
+                    review_count = None
+                    venue_cuisine = None
+                    price_range = None
+                    venue_neighborhood = None
+                    available_times = []
+
+                    # Walk up to find the card container
+                    try:
+                        # Try to get parent container with more info
+                        parent = link.locator('xpath=ancestor::div[contains(@class, "Card") or contains(@class, "card") or contains(@class, "Result") or contains(@class, "result") or contains(@class, "Venue") or contains(@class, "venue")]').first
+                        if parent.count() > 0:
+                            card = parent
+                    except:
+                        pass
+
+                    # Extract rating from card
+                    try:
+                        rating_elem = card.locator('[class*="Rating"], [class*="rating"], [data-test-id="venue-rating"]').first
+                        if rating_elem.count() > 0:
+                            rating_text = rating_elem.inner_text().strip()
+                            # Parse "4.8 (123)" or just "4.8"
+                            import re
+                            rating_match = re.search(r'(\d+\.?\d*)', rating_text)
+                            if rating_match:
+                                rating = float(rating_match.group(1))
+                            count_match = re.search(r'\((\d+)\)', rating_text)
+                            if count_match:
+                                review_count = int(count_match.group(1))
+                    except:
+                        pass
+
+                    # Extract cuisine from card
+                    try:
+                        cuisine_elem = card.locator('[class*="Cuisine"], [class*="cuisine"], [class*="Category"], [class*="category"]').first
+                        if cuisine_elem.count() > 0:
+                            venue_cuisine = cuisine_elem.inner_text().strip()
+                    except:
+                        pass
+
+                    # Extract price range from card
+                    try:
+                        price_elem = card.locator('[class*="Price"], [class*="price"], :text("$")').first
+                        if price_elem.count() > 0:
+                            price_text = price_elem.inner_text().strip()
+                            # Look for $ symbols
+                            import re
+                            price_match = re.search(r'(\$+)', price_text)
+                            if price_match:
+                                price_range = price_match.group(1)
+                    except:
+                        pass
+
+                    # Extract neighborhood from card
+                    try:
+                        hood_elem = card.locator('[class*="Neighborhood"], [class*="neighborhood"], [class*="Location"], [class*="location"]').first
+                        if hood_elem.count() > 0:
+                            venue_neighborhood = hood_elem.inner_text().strip()
+                    except:
+                        pass
+
+                    # Extract available time slots from card
+                    try:
+                        time_buttons = card.locator('button').all()
+                        for btn in time_buttons:
+                            try:
+                                btn_text = btn.inner_text().strip()
+                                # Check if this looks like a time slot (contains AM/PM)
+                                if (' AM' in btn_text or ' PM' in btn_text) and not btn.is_disabled():
+                                    # Clean up: "5:15 PM\nDining Room" -> {"time": "5:15 PM", "type": "Dining Room"}
+                                    parts = btn_text.split('\n')
+                                    time_str = parts[0].strip()
+                                    table_type = parts[1].strip() if len(parts) > 1 else 'Dining Room'
+                                    available_times.append({
+                                        'time': time_str,
+                                        'type': table_type,
+                                        'config_id': f"{slug}|||{date}|||{time_str}"
+                                    })
+                            except:
+                                continue
+                    except:
+                        pass
+
+                    venue = {
+                        'name': name,
+                        'slug': slug,
+                        'rating': rating,
+                        'review_count': review_count,
+                        'cuisine': venue_cuisine,
+                        'price_range': price_range,
+                        'neighborhood': venue_neighborhood,
+                        'available_times': available_times
+                    }
+                    venues.append(venue)
+
+                except Exception as e:
+                    logger.debug("Failed to parse venue card: %s", e)
+                    continue
+
+            if venues:
+                print(f"     ✓ Found {len(venues)} restaurants")
+                for v in venues:
+                    times_str = f" ({len(v['available_times'])} slots)" if v['available_times'] else ""
+                    print(f"       - {v['name']}{times_str}")
+            else:
+                print(f"     ✗ No restaurants found for this search")
+
+            return venues
+
+        except Exception as e:
+            print(f"     ✗ Search failed: {e}")
+            logger.error("Cuisine search failed: %s", e)
             return []
 
     def get_venue_by_slug(self, url_slug: str, location: str = 'ny') -> Optional[Dict]:
@@ -649,7 +856,7 @@ class ResyBrowserClient:
 
             if is_404:
                 # Try old URL format as fallback (without /venues/)
-                old_url = f"https://resy.com/cities/{location_lower}/{url_slug}"
+                old_url = f"https://resy.com/cities/{full_location}/{url_slug}"
                 print(f"    ✗ Venue not found, trying fallback: {old_url}")
 
                 self.page.goto(old_url, wait_until='load', timeout=30000)

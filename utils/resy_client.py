@@ -184,8 +184,9 @@ class ResyClient:
         """
         logger.info("Searching Resy for: %s", query)
 
-        # Convert query to URL slug format
-        url_slug = query.lower().replace(' ', '-').replace("'", '')
+        # Convert query to URL slug format using proper normalization
+        from utils.slug_utils import normalize_slug
+        url_slug = normalize_slug(query)
         location_code = (location or 'ny').lower()  # Normalize to lowercase
 
         # Try to get venue by slug

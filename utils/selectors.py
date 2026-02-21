@@ -61,6 +61,45 @@ class ResySelectors:
         ':has-text("Complete Your Reservation")',
     ]
 
+    # Search results page
+    SEARCH_RESULT_CARD = [
+        '[data-test-id="search-result"]',
+        '[class*="SearchResult"]',
+        '[class*="VenueCard"]',
+        'a[href*="/venues/"]',
+    ]
+
+    SEARCH_RESULT_NAME = [
+        '[data-test-id="venue-name"]',
+        'h2',
+        'h3',
+        '[class*="VenueName"]',
+    ]
+
+    SEARCH_RESULT_RATING = [
+        '[data-test-id="venue-rating"]',
+        '[class*="Rating"]',
+        '[class*="rating"]',
+    ]
+
+    SEARCH_RESULT_CUISINE = [
+        '[data-test-id="venue-cuisine"]',
+        '[class*="Cuisine"]',
+        '[class*="cuisine"]',
+    ]
+
+    SEARCH_RESULT_NEIGHBORHOOD = [
+        '[data-test-id="venue-neighborhood"]',
+        '[class*="Neighborhood"]',
+        '[class*="neighborhood"]',
+    ]
+
+    SEARCH_RESULT_TIME_SLOT = [
+        '[data-test-id="time-slot"]',
+        'button[class*="TimeSlot"]',
+        'button[class*="timeslot"]',
+    ]
+
 
 class SelectorHelper:
     """Helper methods for finding elements using selector lists."""

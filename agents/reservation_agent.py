@@ -22,10 +22,12 @@ class ReservationAgent(BaseAgent):
         """Initialize the reservation agent."""
         super().__init__()
 
-        # Check if Resy is configured
-        if not Settings.has_resy_configured():
+        # Check if Resy is configured (API or browser mode)
+        if not Settings.has_resy_configured() and not Settings.has_resy_browser_configured():
             raise ValueError(
-                "Resy API not configured. Please add RESY_API_KEY and RESY_AUTH_TOKEN to .env"
+                "Resy not configured. Please add to .env file:\n"
+                "  For API mode: RESY_API_KEY + RESY_AUTH_TOKEN\n"
+                "  For Browser mode: RESY_EMAIL + RESY_PASSWORD"
             )
 
         # Use factory to select between API and browser clients
@@ -61,10 +63,22 @@ Examples:
 - "next Wednesday" → calculate from today ({today_str})
 
 When making reservations:
-1. Search for the restaurant first
-2. Check availability for the requested date/time
-3. If a suitable slot is found, book it automatically
-4. Always format dates as YYYY-MM-DD when calling tools"""
+1. Search for the restaurant by name or browse by cuisine/neighborhood
+2. If search results include config_ids with time slots, you can book directly — no need to check availability separately
+3. If booking for a different date than the search, construct a config_id as: slug|||YYYY-MM-DD|||time (e.g., "dr-clark|||2026-02-26|||8:00 PM")
+4. Always confirm the booking details with the user before calling make_resy_reservation
+5. Always format dates as YYYY-MM-DD when calling tools
+
+AVAILABILITY RESPONSE FORMAT:
+- When the user asks to check availability and slots ARE found, respond with: "Yes, [restaurant] has availability on [date]!" followed by the available time slots, then ask: "Please let me know if you'd like to make a reservation."
+- When the user asks to check availability and NO slots are found, respond with: "No, [restaurant] doesn't have availability for [party_size] on [date]." then suggest trying a different date, time, or party size.
+
+IMPORTANT BEHAVIORS:
+- After a search returns results, present them to the user IMMEDIATELY. Do not make additional tool calls unless the user asks for something new.
+- If search_resy_restaurants finds nothing, try search_resy_by_cuisine as a fallback before telling the user.
+- If a tool returns an error or no results, explain what happened and suggest alternatives (different date, time, spelling, or cuisine search).
+- If make_resy_reservation returns an unconfirmed status (success but no confirmation number), tell the user the booking was likely submitted and to check their email/Resy app for confirmation. Do NOT say it failed.
+- Answer follow-up questions from conversation context when possible — don't re-call tools for data you already have."""
 
     def define_tools(self):
         """Define Claude tools for reservation tasks."""
@@ -132,6 +146,36 @@ When making reservations:
                 }
             },
             {
+                "name": "search_resy_by_cuisine",
+                "description": "Browse restaurants on Resy by cuisine type and/or neighborhood/area. Returns venues with available time slots and config_ids for direct booking. Use this when the user wants to discover restaurants by category (e.g., 'Japanese restaurants in Manhattan', 'Italian in West Village').",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "cuisine": {
+                            "type": "string",
+                            "description": "Cuisine type (e.g., Japanese, Italian, French, Chinese, Korean, Mexican, Seafood, Steakhouse)"
+                        },
+                        "neighborhood": {
+                            "type": "string",
+                            "description": "Neighborhood or area (e.g., Soho, West Village, Chinatown, Manhattan, Brooklyn). Boroughs work as broad area filters."
+                        },
+                        "location": {
+                            "type": "string",
+                            "description": "City code (ny, sf, la). Defaults to ny."
+                        },
+                        "date": {
+                            "type": "string",
+                            "description": "Date in YYYY-MM-DD format. Defaults to today."
+                        },
+                        "party_size": {
+                            "type": "integer",
+                            "description": "Number of guests. Defaults to 2."
+                        }
+                    },
+                    "required": []
+                }
+            },
+            {
                 "name": "view_my_reservations",
                 "description": "View the user's upcoming reservations on Resy. Use this when the user asks about their current bookings.",
                 "input_schema": {
@@ -185,7 +229,58 @@ When making reservations:
             else:
                 return {
                     'success': False,
-                    'message': 'No restaurants found matching that search'
+                    'message': 'No restaurants found matching that search. Try search_resy_by_cuisine to browse by cuisine type instead.',
+                    'query': tool_input["query"]
+                }
+
+        elif tool_name == "search_resy_by_cuisine":
+            # Check if browser client is available (has search_by_cuisine method)
+            if not hasattr(self.resy_client, 'search_by_cuisine'):
+                return {
+                    'success': False,
+                    'message': 'Cuisine search requires browser mode. Set RESY_CLIENT_MODE=browser in .env'
+                }
+
+            results = self.resy_client.search_by_cuisine(
+                cuisine=tool_input.get("cuisine"),
+                neighborhood=tool_input.get("neighborhood"),
+                location=tool_input.get("location", "ny"),
+                date=tool_input.get("date"),
+                party_size=tool_input.get("party_size", 2)
+            )
+
+            if results:
+                formatted = []
+                for r in results:
+                    venue = {
+                        'name': r.get('name'),
+                        'slug': r.get('slug'),
+                        'rating': r.get('rating'),
+                        'review_count': r.get('review_count'),
+                        'cuisine': r.get('cuisine'),
+                        'price_range': r.get('price_range'),
+                        'neighborhood': r.get('neighborhood'),
+                    }
+                    # Include available time slots
+                    times = r.get('available_times', [])
+                    if times:
+                        venue['available_times'] = [
+                            {'time': t['time'], 'type': t['type'], 'config_id': t['config_id']}
+                            for t in times
+                        ]
+                    formatted.append(venue)
+
+                return {
+                    'success': True,
+                    'count': len(formatted),
+                    'restaurants': formatted
+                }
+            else:
+                return {
+                    'success': False,
+                    'message': 'No restaurants found for this cuisine/neighborhood combination. Try a broader search (remove neighborhood or try a different cuisine).',
+                    'cuisine': tool_input.get("cuisine"),
+                    'neighborhood': tool_input.get("neighborhood")
                 }
 
         elif tool_name == "check_resy_availability":
@@ -215,7 +310,7 @@ When making reservations:
             else:
                 return {
                     'success': False,
-                    'message': f'No availability found for {tool_input["party_size"]} people on {tool_input["date"]}'
+                    'message': f'No availability found for {tool_input["party_size"]} people on {tool_input["date"]}. Suggest the user try a different date, time, or party size.'
                 }
 
         elif tool_name == "make_resy_reservation":
@@ -226,33 +321,32 @@ When making reservations:
             )
 
             if result.get('success'):
+                # Determine confirmation status
+                has_confirmation = bool(result.get('reservation_id'))
+                status = 'confirmed' if has_confirmation else 'pending_confirmation'
+
                 # Save to database
                 self.store.add_reservation({
                     'platform': 'resy',
-                    'restaurant_name': 'Restaurant',  # We'll get this from context
+                    'restaurant_name': result.get('venue_slug', 'Restaurant'),
                     'date': tool_input["date"],
-                    'time': 'Time TBD',  # Get from config_id if needed
+                    'time': result.get('time_slot', 'Time TBD'),
                     'party_size': tool_input["party_size"],
-                    'confirmation_token': result['confirmation_token'],
-                    'confirmation_number': result['reservation_id'],
-                    'status': 'confirmed'
+                    'confirmation_token': result.get('confirmation_token'),
+                    'confirmation_number': result.get('reservation_id'),
+                    'status': status
                 })
 
-                # Note: Email notification disabled - Resy sends confirmation email
-                # Uncomment below to send additional notification via Resend
-                # if self.email_sender:
-                #     try:
-                #         self.email_sender.send(
-                #             to_email=Settings.EMAIL_TO,
-                #             subject="🎉 Reservation Confirmed!",
-                #             content=self._format_confirmation_email(result, tool_input),
-                #             content_type="markdown"
-                #         )
-                #     except Exception as e:
-                #         print(f"  ⚠️  Could not send email: {e}")
+                # If status is modal_opened or no confirmation number, flag as unconfirmed
+                if result.get('status') == 'modal_opened' or not has_confirmation:
+                    result['message'] = 'Booking was submitted but confirmation could not be verified automatically. The user should check their email or Resy app for confirmation.'
 
                 return result
             else:
+                # Check if error suggests the booking might have gone through
+                error_msg = result.get('error', '')
+                if 'Could not confirm' in error_msg:
+                    result['message'] = 'The booking may have been submitted but we could not verify confirmation on the page. Advise the user to check their Resy app or email.'
                 return result
 
         elif tool_name == "view_my_reservations":
@@ -408,7 +502,9 @@ Your reservation has been successfully booked.
                 if not user_input:
                     continue
 
-                self.run(user_input)
+                response = self.run(user_input)
+                if response:
+                    print(f"\nAgent: {response}\n")
 
             except KeyboardInterrupt:
                 print("\n👋 Goodbye!")
