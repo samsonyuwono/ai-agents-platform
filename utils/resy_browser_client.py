@@ -1456,7 +1456,7 @@ class ResyBrowserClient:
                         print(f"       ✗ All click methods failed: {str(e2)[:100]}")
                         raise e2
 
-                time.sleep(0.5)  # Brief wait for confirmation modal
+                time.sleep(2)  # Wait for Resy to process booking before checking confirmation
 
                 # Look for FINAL confirmation button (red Confirm button)
                 print(f"     Looking for final Confirm button...")
@@ -1500,10 +1500,10 @@ class ResyBrowserClient:
                         continue
 
                 if final_button_found:
-                    time.sleep(1)  # Wait for booking to complete
+                    time.sleep(2)  # Wait for booking to complete
                 else:
                     print(f"       ⚠️  Final Confirm button not found (may not be needed)")
-                    time.sleep(0.5)
+                    time.sleep(2)
 
             # Look for confirmation or final booking button
             final_button_selectors = [
@@ -1631,14 +1631,19 @@ class ResyBrowserClient:
                 self.page.screenshot(path=screenshot_path)
                 print(f"     Screenshot saved to: {screenshot_path}")
 
-                # If no confirmation but no error, return uncertain status
-                print(f"     ⚠️  Could not confirm booking status")
+                # If no confirmation but no error, booking likely went through
+                print(f"     ⚠️  Could not confirm booking status — treating as likely success")
                 return {
-                    'success': False,
-                    'error': 'Could not confirm reservation status',
+                    'success': True,
+                    'status': 'unconfirmed',
+                    'reservation_id': None,
+                    'confirmation_token': None,
                     'config_id': config_id,
                     'date': date,
-                    'party_size': party_size
+                    'party_size': party_size,
+                    'venue_slug': venue_slug,
+                    'time_slot': time_text,
+                    'message': 'Booking was submitted but confirmation could not be verified. Check email or Resy app.'
                 }
 
         except Exception as e:
