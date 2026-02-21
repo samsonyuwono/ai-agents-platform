@@ -11,7 +11,8 @@ import json
 from pathlib import Path
 from typing import List, Dict, Optional
 from config.settings import Settings
-from utils.slug_utils import normalize_slug
+from utils.slug_utils import normalize_slug, parse_config_id, make_config_id
+from utils.selectors import SelectorHelper
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,23 @@ def resolve_location(location: str) -> str:
 
 class ResyBrowserClient:
     """Browser automation client for Resy - mirrors ResyClient interface."""
+
+    # Quick auth check selectors (used before login attempt)
+    AUTH_INDICATORS_QUICK = [
+        '[data-test-id="user-menu"]',
+        'button:has-text("Sign out")',
+        'a:has-text("Sign out")',
+        'button[aria-label*="user" i]',
+        'a[href*="/user"]',
+    ]
+
+    # Full auth validation selectors (extends quick with more indicators)
+    AUTH_INDICATORS_FULL = AUTH_INDICATORS_QUICK + [
+        'button:has-text("My Reservations")',
+        'a:has-text("My Reservations")',
+        ':has-text("Account")',
+        '[class*="UserMenu"]',
+    ]
 
     def __init__(self, email=None, password=None, headless=None):
         """
@@ -129,13 +147,15 @@ class ResyBrowserClient:
         """Destructor - cleanup browser resources."""
         self._cleanup()
 
-    def _rate_limit(self, force: bool = True):
+    def _rate_limit(self, force: bool = True, navigation: bool = True):
         """
         Enforce rate limiting with randomized delays.
         Conservative timing to avoid account flagging.
 
         Args:
             force: If False, skip rate limit for cached/fast operations
+            navigation: If True (default), use full delays for HTTP navigations.
+                        If False, use lighter delays for in-page actions.
         """
         if not force and (time.time() - self.last_request_time) < 2:
             # Skip rate limit for fast local operations
@@ -144,29 +164,38 @@ class ResyBrowserClient:
         current_time = time.time()
         time_since_last = current_time - self.last_request_time
 
-        if time_since_last < self.min_delay_seconds:
-            # Use dynamic jitter settings from configuration
-            jitter = random.uniform(
-                Settings.RESY_RATE_LIMIT_JITTER_MIN,
-                Settings.RESY_RATE_LIMIT_JITTER_MAX
-            )
-            sleep_time = (self.min_delay_seconds - time_since_last) + jitter
-            print(f"  ⏳ Rate limiting: waiting {sleep_time:.1f}s...")
-            time.sleep(sleep_time)
+        if navigation:
+            # Full rate limiting for page navigations
+            if time_since_last < self.min_delay_seconds:
+                jitter = random.uniform(
+                    Settings.RESY_RATE_LIMIT_JITTER_MIN,
+                    Settings.RESY_RATE_LIMIT_JITTER_MAX
+                )
+                sleep_time = (self.min_delay_seconds - time_since_last) + jitter
+                print(f"  ⏳ Rate limiting: waiting {sleep_time:.1f}s...")
+                time.sleep(sleep_time)
+            else:
+                # Even when not rate-limited, add small random delay
+                small_jitter = random.uniform(0.3, 0.8)
+                time.sleep(small_jitter)
         else:
-            # Even when not rate-limited, add small random delay
-            small_jitter = random.uniform(0.5, 1.5)
-            time.sleep(small_jitter)
+            # Lighter rate limiting for in-page actions (no HTTP navigation)
+            min_delay = 1.0
+            if time_since_last < min_delay:
+                jitter = random.uniform(0.2, 0.5)
+                sleep_time = (min_delay - time_since_last) + jitter
+                print(f"  ⏳ Rate limiting (in-page): waiting {sleep_time:.1f}s...")
+                time.sleep(sleep_time)
 
         self.last_request_time = time.time()
 
     def _add_human_behavior(self, page):
         """Add realistic delays and behavior to avoid detection and account flagging."""
-        # Random delay - increased for more natural behavior
-        time.sleep(random.uniform(0.5, 1.5))
+        # Random delay
+        time.sleep(random.uniform(0.1, 0.4))
 
-        # Random scroll (more frequently for realism)
-        if random.random() > 0.5:
+        # Occasional random scroll
+        if random.random() > 0.7:
             scroll_amount = random.randint(50, 200)
             page.evaluate(f'window.scrollBy(0, {scroll_amount})')
 
@@ -204,39 +233,62 @@ class ResyBrowserClient:
                 return False
         return False
 
+    def _screenshot(self, name: str) -> Optional[str]:
+        """Take a screenshot for debugging purposes.
+
+        Args:
+            name: Descriptive name used in filename (e.g., 'login_debug')
+
+        Returns:
+            Path to saved screenshot, or None if failed
+        """
+        try:
+            path = f'/tmp/resy_{name}.png'
+            self.page.screenshot(path=path)
+            print(f"     Screenshot saved: {path}")
+            return path
+        except:
+            return None
+
+    def _find_in_frames(self, selectors: List[str], visible_only: bool = False) -> Optional[tuple]:
+        """Search page and all iframes for first element matching any selector.
+
+        Args:
+            selectors: List of CSS selectors to try
+            visible_only: If True, only return visible elements
+
+        Returns:
+            Tuple of (locator, frame) or None if not found
+        """
+        all_frames = [self.page] + self.page.frames
+        for frame in all_frames:
+            for selector in selectors:
+                try:
+                    loc = frame.locator(selector)
+                    if loc.count() > 0:
+                        candidate = loc.first
+                        if visible_only and not candidate.is_visible():
+                            continue
+                        return (candidate, frame)
+                except:
+                    continue
+        return None
+
     def _is_session_valid(self) -> bool:
         """Check if current session is still authenticated."""
         try:
             print("     → Navigating to Resy homepage for validation...")
-            self.page.goto('https://resy.com', wait_until='networkidle', timeout=15000)
+            self.page.goto('https://resy.com', wait_until='load', timeout=15000)
 
             # Wait for dynamic content to load
             print("     → Waiting for page to fully load...")
-            time.sleep(2)
+            time.sleep(0.5)
 
             # Take screenshot for debugging
-            try:
-                screenshot_path = '/tmp/resy_session_check.png'
-                self.page.screenshot(path=screenshot_path)
-                print(f"     → Screenshot saved: {screenshot_path}")
-            except:
-                pass
-
-            # Check for user menu or profile indicator
-            user_indicators = [
-                '[data-test-id="user-menu"]',
-                'button:has-text("Sign out")',
-                'a:has-text("Sign out")',
-                'button:has-text("My Reservations")',
-                'a:has-text("My Reservations")',
-                ':has-text("Account")',
-                'button[aria-label*="user" i]',
-                'a[href*="/user"]',
-                '[class*="UserMenu"]',
-            ]
+            self._screenshot('session_check')
 
             print("     → Checking for authentication indicators...")
-            for indicator in user_indicators:
+            for indicator in self.AUTH_INDICATORS_FULL:
                 try:
                     count = self.page.locator(indicator).count()
                     print(f"       - {indicator}: {count} matches")
@@ -311,16 +363,8 @@ class ResyBrowserClient:
             self._add_human_behavior(self.page)
 
             # Check if already logged in (no login button present)
-            user_indicators = [
-                '[data-test-id="user-menu"]',
-                'button:has-text("Sign out")',
-                'a:has-text("Sign out")',
-                'button[aria-label*="user" i]',
-                'a[href*="/user"]',
-            ]
-
             print("    Checking if already authenticated...")
-            for indicator in user_indicators:
+            for indicator in self.AUTH_INDICATORS_QUICK:
                 try:
                     if self.page.locator(indicator).count() > 0:
                         print(f"    ✓ Already logged in (found: {indicator})")
@@ -330,23 +374,9 @@ class ResyBrowserClient:
                     continue
 
             # Find and click login button
-            login_selectors = [
-                'button:has-text("Log in")',
-                'a:has-text("Log in")',
-                'button:has-text("Sign in")',
-                '[data-test-id="auth-button"]'
-            ]
-
+            from utils.selectors import ResySelectors
             print("    Looking for login button...")
-            login_button = None
-            for selector in login_selectors:
-                try:
-                    if self.page.locator(selector).count() > 0:
-                        login_button = self.page.locator(selector).first
-                        print(f"    Found login button: {selector}")
-                        break
-                except:
-                    continue
+            login_button = SelectorHelper.find_element(self.page, ResySelectors.LOGIN_BUTTON)
 
             if not login_button:
                 # One more check - maybe we're logged in but didn't detect it above
@@ -376,21 +406,9 @@ class ResyBrowserClient:
             # Resy login flow: First shows phone number login
             # Need to click "Log in with email & password" link at bottom
             print("    Looking for email/password login link...")
-            email_login_selectors = [
-                'a:has-text("Log in with email & password")',
-                'button:has-text("Log in with email & password")',
-                'text="Log in with email & password"'
-            ]
-
-            email_login_link = None
-            for selector in email_login_selectors:
-                try:
-                    if self.page.locator(selector).count() > 0:
-                        email_login_link = self.page.locator(selector).first
-                        print(f"    Found email login link: {selector}")
-                        break
-                except:
-                    continue
+            email_login_link = SelectorHelper.find_element(
+                self.page, ResySelectors.EMAIL_LOGIN_LINK
+            )
 
             if email_login_link:
                 print("    Clicking 'Log in with email & password'...")
@@ -403,21 +421,8 @@ class ResyBrowserClient:
             email_input = None
 
             # Strategy 1: Direct input selectors
-            email_selectors = [
-                'input[type="email"]',
-                'input[name="email"]',
-                'input[placeholder*="email" i]',
-                'input[placeholder*="Email" i]',
-                'input[id*="email" i]',
-                '#email',
-                '[autocomplete="email"]'
-            ]
-
-            for selector in email_selectors:
-                if self.page.locator(selector).count() > 0:
-                    email_input = self.page.locator(selector).first
-                    print(f"    Found email input: {selector}")
-                    break
+            email_selectors = ResySelectors.EMAIL_INPUT
+            email_input = SelectorHelper.find_element(self.page, email_selectors)
 
             # Strategy 2: Look inside modals
             if not email_input:
@@ -458,14 +463,7 @@ class ResyBrowserClient:
                 modals = self.page.locator('[role="dialog"]').count()
                 print(f"    Dialog modals found: {modals}")
 
-                # Take a screenshot for debugging
-                try:
-                    screenshot_path = '/tmp/resy_login_debug.png'
-                    self.page.screenshot(path=screenshot_path)
-                    print(f"    Screenshot saved to: {screenshot_path}")
-                except:
-                    pass
-
+                self._screenshot('login_debug')
                 raise Exception("Could not find email input field after clicking login")
 
             # Fill email
@@ -473,14 +471,8 @@ class ResyBrowserClient:
             self._add_human_behavior(self.page)
 
             # Wait for password input
-            password_selectors = [
-                'input[type="password"]',
-                'input[name="password"]',
-                '#password'
-            ]
-
             password_input = None
-            for selector in password_selectors:
+            for selector in ResySelectors.PASSWORD_INPUT:
                 try:
                     self.page.wait_for_selector(selector, timeout=5000, state='visible')
                     password_input = self.page.locator(selector).first
@@ -496,15 +488,8 @@ class ResyBrowserClient:
             self._add_human_behavior(self.page)
 
             # Click submit - try multiple selectors
-            submit_selectors = [
-                'button[type="submit"]',
-                'button:has-text("Continue")',
-                'button:has-text("Sign in")',
-                'button:has-text("Log in")'
-            ]
-
             clicked = False
-            for selector in submit_selectors:
+            for selector in ResySelectors.SUBMIT_BUTTON:
                 try:
                     self.page.click(selector, timeout=5000)
                     clicked = True
@@ -520,7 +505,7 @@ class ResyBrowserClient:
             time.sleep(3)  # Give time for authentication
 
             # Check for success message first (Resy shows "You are all set" modal)
-            success_selectors = [
+            login_success_selectors = [
                 'text="You are all set"',
                 'text="Welcome back"',
                 'text="Success"',
@@ -528,11 +513,9 @@ class ResyBrowserClient:
             ]
 
             is_logged_in = False
-            for selector in success_selectors:
-                if self.page.locator(selector).count() > 0:
-                    print(f"    Found success message: {selector}")
-                    is_logged_in = True
-                    break
+            if SelectorHelper.find_element(self.page, login_success_selectors):
+                print(f"    Found success message")
+                is_logged_in = True
 
             # Check for user indicators (profile icon, account menu)
             if not is_logged_in:
@@ -575,10 +558,7 @@ class ResyBrowserClient:
                 print("    Waiting for success modal to close...")
                 time.sleep(2)
             else:
-                # Take screenshot for debugging
-                screenshot_path = '/tmp/resy_login_after_submit.png'
-                self.page.screenshot(path=screenshot_path)
-                print(f"    Screenshot saved to: {screenshot_path}")
+                self._screenshot('login_after_submit')
                 raise Exception("Could not confirm login success")
 
         except Exception as e:
@@ -674,7 +654,7 @@ class ResyBrowserClient:
                     }""",
                     timeout=15000
                 )
-                time.sleep(2)  # Additional buffer for all cards to render
+                time.sleep(0.5)  # Additional buffer for all cards to render
                 print(f"     ✓ Search results loaded")
             except Exception as e:
                 print(f"     ⚠️  Timeout waiting for results: {e}")
@@ -784,7 +764,7 @@ class ResyBrowserClient:
                                     available_times.append({
                                         'time': time_str,
                                         'type': table_type,
-                                        'config_id': f"{slug}|||{date}|||{time_str}"
+                                        'config_id': make_config_id(slug, date, time_str)
                                     })
                             except:
                                 continue
@@ -943,7 +923,7 @@ class ResyBrowserClient:
             url = f"https://resy.com/cities/{full_location}/venues/{url_slug}?date={date}&seats={party_size}"
             print(f"    Navigating to: {url}")
 
-            self.page.goto(url, wait_until='load', timeout=60000)  # Give it more time for availability to load
+            self.page.goto(url, wait_until='load', timeout=30000)
 
             # Wait for availability calendar to fully load
             print(f"    Waiting for availability calendar to load...")
@@ -960,11 +940,11 @@ class ResyBrowserClient:
                                     text.toLowerCase().includes('patio') ||
                                     text.split('\\n').length >= 2);
                         });
-                        return timeButtons.length > 5;  // Wait for multiple slots
+                        return timeButtons.length >= 1;
                     }""",
-                    timeout=20000
+                    timeout=10000
                 )
-                time.sleep(2)  # Additional buffer
+                time.sleep(0.5)  # Additional buffer
                 print(f"    ✓ Calendar loaded")
             except Exception as e:
                 print(f"    ⚠️  Timeout waiting for calendar: {e}")
@@ -1025,9 +1005,8 @@ class ResyBrowserClient:
                                         table_info = 'Dining Room'
 
                                     # Parse slot information
-                                    # Use ||| as separator to avoid conflicts with hyphens in venue names/dates
                                     available_slots.append({
-                                        'config_id': f"{venue_id}|||{date}|||{actual_time}",  # Generate clean ID
+                                        'config_id': make_config_id(venue_id, date, actual_time),
                                         'token': None,  # Browser client doesn't have token
                                         'time': actual_time,
                                         'type': 'standard',
@@ -1049,10 +1028,9 @@ class ResyBrowserClient:
                     '.NoAvailability'
                 ]
 
-                for selector in no_avail_selectors:
-                    if self.page.locator(selector).count() > 0:
-                        print(f"    ✗ No availability found (restaurant is fully booked)")
-                        return []
+                if SelectorHelper.find_element(self.page, no_avail_selectors):
+                    print(f"    ✗ No availability found (restaurant is fully booked)")
+                    return []
 
                 print(f"    ✗ No availability found (could not find time slots)")
                 return []
@@ -1102,18 +1080,18 @@ class ResyBrowserClient:
         print(f"     ⚠️  WARNING: This will make a REAL reservation!")
 
         self._ensure_authenticated()
-        self._rate_limit()
+        self._rate_limit(navigation=False)
 
         try:
             # Parse config_id to extract venue, date, and time
-            # Format: "venue_id|||date|||time_text"
-            parts = config_id.split('|||')
-            if len(parts) != 3:
-                raise Exception(f"Invalid config_id format: {config_id}. Expected format: venue|||date|||time")
+            try:
+                parsed = parse_config_id(config_id)
+            except ValueError as e:
+                raise Exception(str(e))
 
-            venue_slug = parts[0]
-            date_from_id = parts[1]
-            time_text = parts[2]
+            venue_slug = parsed['venue_slug']
+            date_from_id = parsed['date']
+            time_text = parsed['time_text']
 
             print(f"     Venue: {venue_slug}")
             print(f"     Date: {date}")
@@ -1136,7 +1114,7 @@ class ResyBrowserClient:
                 print(f"     ✓ Already on {venue_slug} with correct date/seats")
             else:
                 print(f"     Navigating to: {venue_slug} on {date}")
-                self.page.goto(url, wait_until='load', timeout=60000)
+                self.page.goto(url, wait_until='load', timeout=30000)
 
             # Wait for availability calendar if we just navigated
             if needs_navigation:
@@ -1154,18 +1132,18 @@ class ResyBrowserClient:
                                         text.toLowerCase().includes('patio') ||
                                         text.split('\\n').length >= 2);
                             });
-                            return timeButtons.length > 5;
+                            return timeButtons.length >= 1;
                         }""",
-                        timeout=20000
+                        timeout=10000
                     )
-                    time.sleep(2)
+                    time.sleep(0.5)
                     print(f"     ✓ Availability calendar loaded")
                 except Exception as e:
                     print(f"     ⚠️  Timeout waiting for availability: {e}")
             else:
                 # Already on page, calendar should be loaded
                 print(f"     Calendar should already be loaded from previous check")
-                time.sleep(1)
+                time.sleep(0.5)
 
             # Find and click the time slot button
             print(f"     Looking for time slot: {time_text}")
@@ -1192,10 +1170,7 @@ class ResyBrowserClient:
                 print(f"     Error searching buttons: {e}")
 
             if not time_button:
-                # Take screenshot for debugging
-                screenshot_path = '/tmp/resy_no_button.png'
-                self.page.screenshot(path=screenshot_path)
-                print(f"     Screenshot saved to: {screenshot_path}")
+                self._screenshot('no_button')
                 raise Exception(f"Could not find available time slot: {time_text}")
 
             print(f"     Clicking time slot...")
@@ -1208,29 +1183,15 @@ class ResyBrowserClient:
             # Wait for modal to appear (shorter timeout, modal should appear quickly)
             modal_appeared = False
             try:
-                # Try multiple selectors for the modal
-                modal_selectors = [
-                    '[role="dialog"]',
-                    ':has-text("Complete Your Reservation")',
-                    '[class*="Modal"]'
-                ]
-
-                for selector in modal_selectors:
-                    try:
-                        self.page.wait_for_selector(selector, timeout=3000)
-                        print(f"     ✓ Booking modal appeared")
-                        modal_appeared = True
-                        time.sleep(0.3)  # Brief wait for modal content
-                        break
-                    except:
-                        continue
-
-                if not modal_appeared:
-                    print(f"     ⚠️  Modal might not have appeared, proceeding anyway...")
-                    time.sleep(0.5)  # Minimal wait
+                # Wait for any modal indicator with a single combined selector
+                combined_modal = '[role="dialog"], :has-text("Complete Your Reservation"), [class*="Modal"]'
+                self.page.wait_for_selector(combined_modal, timeout=5000)
+                print(f"     ✓ Booking modal appeared")
+                modal_appeared = True
+                time.sleep(0.3)  # Brief wait for modal content
 
             except Exception as e:
-                print(f"     ⚠️  Timeout waiting for modal: {e}")
+                print(f"     ⚠️  Modal might not have appeared, proceeding anyway...")
                 # Continue anyway
 
             # Look for continue/reserve buttons
@@ -1412,10 +1373,7 @@ class ResyBrowserClient:
                     print(f"     The time slot button was clicked and reservation modal appeared.")
                     print(f"     Manual step: Click 'Reserve Now' button in the modal to complete booking")
 
-                    # Take screenshot
-                    screenshot_path = '/tmp/resy_booking_modal_success.png'
-                    self.page.screenshot(path=screenshot_path)
-                    print(f"     Screenshot: {screenshot_path}")
+                    self._screenshot('booking_modal_success')
 
                     # Return partial success
                     return {
@@ -1458,204 +1416,65 @@ class ResyBrowserClient:
 
                 time.sleep(2)  # Wait for Resy to process booking before checking confirmation
 
-                # Look for FINAL confirmation button (red Confirm button)
-                print(f"     Looking for final Confirm button...")
-                final_confirm_selectors = [
-                    'button:has-text("Confirm")',
-                    'button:has-text("confirm")',
-                    'button[class*="confirm" i]',
-                    'button[type="submit"]'
+                # Check for existing reservation conflict modal
+                # Search main page AND all iframes (conflict modal is inside booking iframe)
+                conflict_selectors = [
+                    'button:has-text("Keep Existing Reservation")',
+                    'button:has-text("Continue Booking")',
                 ]
 
-                final_button_found = False
-                for selector in final_confirm_selectors:
+                print(f"     Checking for conflict modal across frames...")
+                conflict_result = self._find_in_frames(conflict_selectors)
+                conflict_detected = conflict_result is not None
+                conflict_frame = conflict_result[1] if conflict_result else None
+
+                if conflict_detected:
+                    print(f"     ⚠️  Conflict detected in frame!")
+                    # Extract conflict message from dialog
+                    message = ""
                     try:
-                        # Check all frames including main page
-                        all_frames = [self.page] + self.page.frames
-
-                        for frame in all_frames:
-                            try:
-                                if frame.locator(selector).count() > 0:
-                                    buttons = frame.locator(selector).all()
-                                    for btn in buttons:
-                                        try:
-                                            btn_text = btn.inner_text().strip().lower()
-                                            if 'confirm' in btn_text and btn.is_visible() and not btn.is_disabled():
-                                                print(f"       ✓ Found Confirm button: '{btn_text}'")
-                                                btn.scroll_into_view_if_needed(timeout=1000)
-                                                time.sleep(0.3)
-                                                btn.click(timeout=3000)
-                                                print(f"       ✓ Final Confirm button clicked!")
-                                                final_button_found = True
-                                                break
-                                        except:
-                                            continue
-                                    if final_button_found:
-                                        break
-                            except:
-                                continue
-                        if final_button_found:
-                            break
+                        dialog = conflict_frame.locator('[role="dialog"], [class*="Modal"], [class*="modal"]').first
+                        message = dialog.inner_text()
                     except:
-                        continue
-
-                if final_button_found:
-                    time.sleep(2)  # Wait for booking to complete
-                else:
-                    print(f"       ⚠️  Final Confirm button not found (may not be needed)")
-                    time.sleep(2)
-
-            # Look for confirmation or final booking button
-            final_button_selectors = [
-                'button:has-text("Reserve Now")',
-                'button:has-text("Complete Reservation")',
-                'button:has-text("Confirm")',
-                'button:has-text("Book Now")'
-            ]
-
-            final_button = None
-            for selector in final_button_selectors:
-                if self.page.locator(selector).count() > 0:
-                    buttons = self.page.locator(selector).all()
-                    for btn in buttons:
-                        if btn.is_visible() and not btn.is_disabled():
-                            final_button = btn
-                            break
-                if final_button:
-                    break
-
-            if final_button:
-                print(f"     ⚠️  Final booking button found!")
-                print(f"     This will COMPLETE the reservation.")
-
-                print(f"     Clicking final booking button...")
-                final_button.click()
-                time.sleep(1)  # Brief wait for confirmation
-
-            # Look for confirmation message
-            print(f"     Checking for confirmation...")
-
-            confirmation_selectors = [
-                'text="Reservation Booked"',
-                ':has-text("Reservation Booked")',
-                'text="Confirmed"',
-                'text="Your reservation is confirmed"',
-                'text="Reservation confirmed"',
-                ':has-text("check your inbox")',
-                '[class*="Confirmation"]',
-                '[class*="Success"]'
-            ]
-
-            is_confirmed = False
-            for selector in confirmation_selectors:
-                try:
-                    # Check main page and all frames
-                    all_frames = [self.page] + self.page.frames
-                    for frame in all_frames:
+                        # Fallback: try getting all text from the conflict frame
                         try:
-                            if frame.locator(selector).count() > 0:
-                                print(f"     ✓ Booking confirmed! Found: {selector}")
-                                is_confirmed = True
-                                break
-                        except:
-                            continue
-                    if is_confirmed:
-                        break
-                except:
-                    continue
-
-            if is_confirmed:
-                # Try to extract confirmation details
-                confirmation_number = None
-
-                # Look for confirmation number
-                try:
-                    # Common patterns for confirmation numbers
-                    conf_patterns = [
-                        r'text=/Confirmation.*#\s*(\w+)/',
-                        r'text=/Reference.*#\s*(\w+)/',
-                        r'text=/Booking.*#\s*(\w+)/'
-                    ]
-
-                    for pattern in conf_patterns:
-                        if self.page.locator(pattern).count() > 0:
-                            text = self.page.locator(pattern).first.inner_text()
-                            # Extract number from text
-                            import re
-                            match = re.search(r'#\s*(\w+)', text)
-                            if match:
-                                confirmation_number = match.group(1)
-                                break
-                except:
-                    pass
-
-                print(f"     ✅ Reservation successful!")
-                if confirmation_number:
-                    print(f"        Confirmation: {confirmation_number}")
-
-                return {
-                    'success': True,
-                    'reservation_id': confirmation_number or f"resy-{venue_slug}-{date}",
-                    'confirmation_token': None,  # Browser client doesn't have token
-                    'config_id': config_id,
-                    'date': date,
-                    'party_size': party_size,
-                    'venue_slug': venue_slug,
-                    'time_slot': time_text
-                }
-            else:
-                # Check for errors
-                error_selectors = [
-                    'text="reservation failed"',
-                    'text="unable to book"',
-                    'text="not available"',
-                    '[role="alert"]'
-                ]
-
-                error_found = False
-                error_message = ""
-                for selector in error_selectors:
-                    if self.page.locator(selector).count() > 0:
-                        try:
-                            error_message = self.page.locator(selector).first.inner_text()
-                            error_found = True
-                            break
+                            message = conflict_frame.locator(':has-text("already have a")').first.inner_text()
                         except:
                             pass
 
-                if error_found:
-                    raise Exception(f"Booking failed: {error_message}")
+                    # Parse out the conflicting restaurant name
+                    conflicting_restaurant = None
+                    try:
+                        import re
+                        match = re.search(r'reservation at\s+(.+?)\.', message)
+                        if match:
+                            conflicting_restaurant = match.group(1).strip()
+                    except:
+                        pass
 
-                # Take screenshot for debugging
-                screenshot_path = '/tmp/resy_booking_result.png'
-                self.page.screenshot(path=screenshot_path)
-                print(f"     Screenshot saved to: {screenshot_path}")
+                    self._screenshot('booking_conflict')
 
-                # If no confirmation but no error, booking likely went through
-                print(f"     ⚠️  Could not confirm booking status — treating as likely success")
-                return {
-                    'success': True,
-                    'status': 'unconfirmed',
-                    'reservation_id': None,
-                    'confirmation_token': None,
-                    'config_id': config_id,
-                    'date': date,
-                    'party_size': party_size,
-                    'venue_slug': venue_slug,
-                    'time_slot': time_text,
-                    'message': 'Booking was submitted but confirmation could not be verified. Check email or Resy app.'
-                }
+                    return {
+                        'success': False,
+                        'status': 'conflict',
+                        'config_id': config_id,
+                        'date': date,
+                        'party_size': party_size,
+                        'venue_slug': venue_slug,
+                        'time_slot': time_text,
+                        'conflicting_restaurant': conflicting_restaurant,
+                        'message': message or 'You already have a reservation that conflicts with this time slot.',
+                        'options': ['continue_booking', 'keep_existing']
+                    }
+
+                # No conflict — proceed to check for booking confirmation
+                print(f"     No conflict modal found, proceeding to confirmation check")
+                return self._check_booking_confirmation(config_id, date, party_size, venue_slug, time_text)
 
         except Exception as e:
             print(f"     ✗ Reservation failed: {e}")
 
-            # Take screenshot on error
-            try:
-                screenshot_path = '/tmp/resy_booking_error.png'
-                self.page.screenshot(path=screenshot_path)
-                print(f"     Screenshot saved to: {screenshot_path}")
-            except:
-                pass
+            self._screenshot('booking_error')
 
             return {
                 'success': False,
@@ -1663,6 +1482,247 @@ class ResyBrowserClient:
                 'config_id': config_id,
                 'date': date,
                 'party_size': party_size
+            }
+
+    def _check_booking_confirmation(self, config_id: str, date: str, party_size: int,
+                                     venue_slug: str, time_text: str) -> Dict:
+        """Check for booking confirmation after a reservation action (Reserve Now or conflict resolution)."""
+        # Look for FINAL confirmation button (red Confirm button)
+        print(f"     Looking for final Confirm button...")
+        final_confirm_selectors = [
+            'button:has-text("Confirm")',
+            'button:has-text("confirm")',
+            'button[class*="confirm" i]',
+            'button[type="submit"]'
+        ]
+
+        final_button_found = False
+        confirm_result = self._find_in_frames(final_confirm_selectors, visible_only=True)
+        if confirm_result:
+            btn, _ = confirm_result
+            try:
+                btn_text = btn.inner_text().strip().lower()
+                if 'confirm' in btn_text and not btn.is_disabled():
+                    print(f"       ✓ Found Confirm button: '{btn_text}'")
+                    btn.scroll_into_view_if_needed(timeout=1000)
+                    time.sleep(0.3)
+                    btn.click(timeout=3000)
+                    print(f"       ✓ Final Confirm button clicked!")
+                    final_button_found = True
+            except:
+                pass
+
+        if final_button_found:
+            time.sleep(1)  # Wait for booking to complete
+        else:
+            print(f"       ⚠️  Final Confirm button not found (may not be needed)")
+            time.sleep(0.5)
+
+        # Look for confirmation or final booking button
+        final_button_selectors = [
+            'button:has-text("Reserve Now")',
+            'button:has-text("Complete Reservation")',
+            'button:has-text("Confirm")',
+            'button:has-text("Book Now")'
+        ]
+
+        final_button = None
+        for selector in final_button_selectors:
+            if self.page.locator(selector).count() > 0:
+                buttons = self.page.locator(selector).all()
+                for btn in buttons:
+                    if btn.is_visible() and not btn.is_disabled():
+                        final_button = btn
+                        break
+            if final_button:
+                break
+
+        if final_button:
+            print(f"     ⚠️  Final booking button found!")
+            print(f"     This will COMPLETE the reservation.")
+
+            print(f"     Clicking final booking button...")
+            final_button.click()
+            time.sleep(1)  # Brief wait for confirmation
+
+        # Look for confirmation message
+        print(f"     Checking for confirmation...")
+
+        confirmation_selectors = [
+            'text="Reservation Booked"',
+            ':has-text("Reservation Booked")',
+            'text="Confirmed"',
+            'text="Your reservation is confirmed"',
+            'text="Reservation confirmed"',
+            ':has-text("check your inbox")',
+            '[class*="Confirmation"]',
+            '[class*="Success"]'
+        ]
+
+        confirmation_found = self._find_in_frames(confirmation_selectors)
+        is_confirmed = confirmation_found is not None
+        if is_confirmed:
+            print(f"     ✓ Booking confirmed!")
+
+        if is_confirmed:
+            # Try to extract confirmation details
+            confirmation_number = None
+
+            # Look for confirmation number
+            try:
+                # Common patterns for confirmation numbers
+                conf_patterns = [
+                    r'text=/Confirmation.*#\s*(\w+)/',
+                    r'text=/Reference.*#\s*(\w+)/',
+                    r'text=/Booking.*#\s*(\w+)/'
+                ]
+
+                for pattern in conf_patterns:
+                    if self.page.locator(pattern).count() > 0:
+                        text = self.page.locator(pattern).first.inner_text()
+                        # Extract number from text
+                        import re
+                        match = re.search(r'#\s*(\w+)', text)
+                        if match:
+                            confirmation_number = match.group(1)
+                            break
+            except:
+                pass
+
+            print(f"     ✅ Reservation successful!")
+            if confirmation_number:
+                print(f"        Confirmation: {confirmation_number}")
+
+            return {
+                'success': True,
+                'reservation_id': confirmation_number or f"resy-{venue_slug}-{date}",
+                'confirmation_token': None,  # Browser client doesn't have token
+                'config_id': config_id,
+                'date': date,
+                'party_size': party_size,
+                'venue_slug': venue_slug,
+                'time_slot': time_text
+            }
+        else:
+            # Check for errors
+            error_selectors = [
+                'text="reservation failed"',
+                'text="unable to book"',
+                'text="not available"',
+                '[role="alert"]'
+            ]
+
+            error_found = False
+            error_message = ""
+            for selector in error_selectors:
+                if self.page.locator(selector).count() > 0:
+                    try:
+                        error_message = self.page.locator(selector).first.inner_text()
+                        error_found = True
+                        break
+                    except:
+                        pass
+
+            if error_found:
+                raise Exception(f"Booking failed: {error_message}")
+
+            self._screenshot('booking_result')
+
+            # If no confirmation but no error, booking likely went through
+            print(f"     ⚠️  Could not confirm booking status — treating as likely success")
+            return {
+                'success': True,
+                'status': 'unconfirmed',
+                'reservation_id': None,
+                'confirmation_token': None,
+                'config_id': config_id,
+                'date': date,
+                'party_size': party_size,
+                'venue_slug': venue_slug,
+                'time_slot': time_text,
+                'message': 'Booking was submitted but confirmation could not be verified. Check email or Resy app.'
+            }
+
+    def resolve_reservation_conflict(self, choice: str, config_id: str = None,
+                                      date: str = None, party_size: int = None,
+                                      venue_slug: str = None, time_text: str = None) -> Dict:
+        """
+        Resolve a reservation conflict by clicking Keep Existing or Continue Booking.
+        Must be called while the conflict modal is still open on the page.
+
+        Args:
+            choice: 'continue_booking' or 'keep_existing'
+            config_id: Config ID for the attempted booking
+            date: Reservation date
+            party_size: Number of guests
+            venue_slug: Restaurant slug
+            time_text: Time slot text
+        """
+        print(f"  🔄 Resolving reservation conflict: {choice}")
+
+        try:
+            if choice == 'keep_existing':
+                # Click "Keep Existing Reservation" button
+                btn_selector = 'button:has-text("Keep Existing Reservation")'
+                result = self._find_in_frames([btn_selector], visible_only=True)
+                btn = result[0] if result else None
+
+                if btn:
+                    try:
+                        btn.click(timeout=5000)
+                        print(f"     ✓ Clicked 'Keep Existing Reservation'")
+                    except Exception as e:
+                        print(f"     ⚠️  Could not click button: {e}")
+                else:
+                    print(f"     ⚠️  'Keep Existing Reservation' button not found")
+
+                return {
+                    'success': True,
+                    'status': 'kept_existing',
+                    'message': 'Kept existing reservation. New booking was not made.'
+                }
+
+            elif choice == 'continue_booking':
+                # Click "Continue Booking" button
+                btn_selector = 'button:has-text("Continue Booking")'
+                result = self._find_in_frames([btn_selector], visible_only=True)
+                btn = result[0] if result else None
+
+                if btn:
+                    try:
+                        btn.click(timeout=5000)
+                        print(f"     ✓ Clicked 'Continue Booking'")
+                    except Exception as e:
+                        print(f"     ✗ Could not click button: {e}")
+                        return {
+                            'success': False,
+                            'error': f'Could not click Continue Booking button: {e}'
+                        }
+                else:
+                    print(f"     ✗ 'Continue Booking' button not found")
+                    return {
+                        'success': False,
+                        'error': 'Continue Booking button not found'
+                    }
+
+                time.sleep(2)  # Wait for Resy to process
+
+                # Now check for booking confirmation
+                return self._check_booking_confirmation(
+                    config_id or '', date or '', party_size or 0,
+                    venue_slug or '', time_text or ''
+                )
+            else:
+                return {
+                    'success': False,
+                    'error': f"Invalid choice: {choice}. Must be 'continue_booking' or 'keep_existing'."
+                }
+
+        except Exception as e:
+            print(f"     ✗ Conflict resolution failed: {e}")
+            return {
+                'success': False,
+                'error': str(e)
             }
 
     def get_reservations(self) -> List[Dict]:

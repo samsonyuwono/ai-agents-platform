@@ -35,9 +35,9 @@ class Settings:
 
     # Resy Dynamic Configuration
     RESY_DEFAULT_LOCATION = os.environ.get("RESY_DEFAULT_LOCATION", "ny")
-    RESY_RATE_LIMIT_MIN_SECONDS = int(os.environ.get("RESY_RATE_LIMIT_MIN_SECONDS", "6"))
-    RESY_RATE_LIMIT_JITTER_MIN = float(os.environ.get("RESY_RATE_LIMIT_JITTER_MIN", "1.0"))
-    RESY_RATE_LIMIT_JITTER_MAX = float(os.environ.get("RESY_RATE_LIMIT_JITTER_MAX", "2.5"))
+    RESY_RATE_LIMIT_MIN_SECONDS = int(os.environ.get("RESY_RATE_LIMIT_MIN_SECONDS", "3"))
+    RESY_RATE_LIMIT_JITTER_MIN = float(os.environ.get("RESY_RATE_LIMIT_JITTER_MIN", "0.5"))
+    RESY_RATE_LIMIT_JITTER_MAX = float(os.environ.get("RESY_RATE_LIMIT_JITTER_MAX", "1.5"))
     RESY_BROWSER_TIMEOUT_MS = int(os.environ.get("RESY_BROWSER_TIMEOUT_MS", "30000"))
 
     # OpenTable Configuration
