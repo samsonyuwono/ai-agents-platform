@@ -42,14 +42,17 @@ class ReservationAgent(BaseAgent):
         else:
             self.email_sender = None
 
-        # System prompt with date parsing guidance
-        today = datetime.now()
-        today_str = today.strftime("%B %d, %Y")
-        current_year = today.year
+        # System prompt with date/time parsing guidance
+        from zoneinfo import ZoneInfo
+        now_est = datetime.now(ZoneInfo("America/New_York"))
+        today_str = now_est.strftime("%B %d, %Y")
+        time_str = now_est.strftime("%I:%M %p %Z")
+        current_year = now_est.year
         self.system_prompt = f"""You are a helpful restaurant reservation assistant.
 
 CRITICAL DATE PARSING RULES:
 - Today's date is {today_str}
+- Current time is {time_str}
 - Current year is {current_year}
 - When parsing dates:
   * If user says "Feb 25" or "February 25" without a year, assume {current_year}
