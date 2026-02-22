@@ -4,6 +4,7 @@ Uses Playwright to interact with Resy website when API is unreliable.
 """
 
 import logging
+import re
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
 import time
 import random
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from config.settings import Settings
 from utils.slug_utils import normalize_slug, parse_config_id, make_config_id
-from utils.selectors import SelectorHelper
+from utils.selectors import ResySelectors, SelectorHelper
 
 logger = logging.getLogger(__name__)
 
@@ -940,7 +941,11 @@ class ResyBrowserClient:
                                     text.toLowerCase().includes('patio') ||
                                     text.split('\\n').length >= 2);
                         });
-                        return timeButtons.length >= 1;
+                        if (timeButtons.length >= 1) return true;
+                        // Also check for DayOfEventCard "Book Now" buttons
+                        const eventCards = document.querySelectorAll('[class*="DayOfEventCard--book-button"]');
+                        if (eventCards.length >= 1) return true;
+                        return false;
                     }""",
                     timeout=10000
                 )
@@ -1016,6 +1021,37 @@ class ResyBrowserClient:
                 except Exception as e:
                     # Skip this button if we can't parse it
                     continue
+
+            # Fallback: check for DayOfEventCard elements (new Resy event UI)
+            if not available_slots:
+                event_cards = self.page.locator(ResySelectors.EVENT_CARD_CONTAINER).all()
+                for card in event_cards:
+                    try:
+                        date_el = card.locator(ResySelectors.EVENT_CARD_DATE)
+                        if date_el.count() == 0:
+                            continue
+                        date_text = date_el.inner_text().strip()  # e.g. "Fri Mar 6 at 5:30 PM"
+                        # Extract time from "... at H:MM PM"
+                        time_match = re.search(r'(\d{1,2}:\d{2}\s*[AP]M)', date_text, re.IGNORECASE)
+                        if not time_match:
+                            continue
+                        actual_time = time_match.group(1)
+
+                        name_el = card.locator(ResySelectors.EVENT_CARD_NAME)
+                        event_name = name_el.inner_text().strip() if name_el.count() > 0 else ''
+
+                        available_slots.append({
+                            'config_id': make_config_id(venue_id, date, actual_time),
+                            'token': None,
+                            'time': actual_time,
+                            'type': 'event',
+                            'table_name': event_name or 'Event',
+                            'venue_name': url_slug,
+                        })
+                    except:
+                        continue
+                if available_slots:
+                    print(f"    ✓ Found {len(available_slots)} event card slots")
 
             if available_slots:
                 print(f"    ✓ Found {len(available_slots)} available slots")
@@ -1132,7 +1168,11 @@ class ResyBrowserClient:
                                         text.toLowerCase().includes('patio') ||
                                         text.split('\\n').length >= 2);
                             });
-                            return timeButtons.length >= 1;
+                            if (timeButtons.length >= 1) return true;
+                            // Also check for DayOfEventCard "Book Now" buttons
+                            const eventCards = document.querySelectorAll('[class*="DayOfEventCard--book-button"]');
+                            if (eventCards.length >= 1) return true;
+                            return false;
                         }""",
                         timeout=10000
                     )
@@ -1168,6 +1208,24 @@ class ResyBrowserClient:
                         continue
             except Exception as e:
                 print(f"     Error searching buttons: {e}")
+
+            # Fallback: check for DayOfEventCard book button (event UI)
+            if not time_button:
+                event_cards = self.page.locator(ResySelectors.EVENT_CARD_CONTAINER).all()
+                for card in event_cards:
+                    try:
+                        date_el = card.locator(ResySelectors.EVENT_CARD_DATE)
+                        if date_el.count() == 0:
+                            continue
+                        date_text = date_el.inner_text().strip()
+                        if time_text in date_text:
+                            book_btn = card.locator(ResySelectors.EVENT_CARD_BOOK_BUTTON)
+                            if book_btn.count() > 0 and not book_btn.first.is_disabled():
+                                time_button = book_btn.first
+                                print(f"     Found event card Book Now for: {date_text}")
+                                break
+                    except:
+                        continue
 
             if not time_button:
                 self._screenshot('no_button')

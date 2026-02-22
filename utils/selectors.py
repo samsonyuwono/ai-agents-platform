@@ -107,6 +107,12 @@ class ResySelectors:
         'button[class*="timeslot"]',
     ]
 
+    # DayOfEventCard (new Resy UI for event-style listings)
+    EVENT_CARD_CONTAINER = '[class*="DayOfEventCard--container"]'
+    EVENT_CARD_DATE = '[class*="DayOfEventCard--selectedDate"]'
+    EVENT_CARD_NAME = '[class*="DayOfEventCard--name"]'
+    EVENT_CARD_BOOK_BUTTON = '.DayOfEventCard--book-button'
+
 
 class SelectorHelper:
     """Helper methods for finding elements using selector lists."""
