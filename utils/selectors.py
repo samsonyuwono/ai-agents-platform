@@ -61,6 +61,13 @@ class ResySelectors:
         ':has-text("Complete Your Reservation")',
     ]
 
+    # Conflict modal (existing reservation conflicts with new booking)
+    CONFLICT_MODAL = [
+        'button:has-text("Keep Existing Reservation")',
+        'button:has-text("Continue Booking")',
+        ':has-text("already have a")',
+    ]
+
     # Search results page
     SEARCH_RESULT_CARD = [
         '[data-test-id="search-result"]',
