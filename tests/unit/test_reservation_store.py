@@ -295,3 +295,36 @@ class TestSniperJobs:
         job = store.get_sniper_job(job_id)
         assert job['status'] == 'completed'
         assert job['reservation_id'] == res_id
+
+    def test_claim_next_sniper_job_returns_due_job(self, store, sample_job):
+        """Test claiming a pending job whose scheduled_at has passed."""
+        past_job = {**sample_job, 'scheduled_at': '2020-01-01T09:00:00'}
+        job_id = store.add_sniper_job(past_job)
+
+        claimed = store.claim_next_sniper_job()
+
+        assert claimed is not None
+        assert claimed['id'] == job_id
+        assert claimed['status'] == 'active'
+
+    def test_claim_next_sniper_job_skips_future(self, store, sample_job):
+        """Test that future jobs are not claimed."""
+        future_job = {**sample_job, 'scheduled_at': '2099-01-01T09:00:00'}
+        store.add_sniper_job(future_job)
+
+        claimed = store.claim_next_sniper_job()
+        assert claimed is None
+
+    def test_claim_next_sniper_job_skips_already_active(self, store, sample_job):
+        """Test that already-active jobs are not claimed."""
+        past_job = {**sample_job, 'scheduled_at': '2020-01-01T09:00:00'}
+        job_id = store.add_sniper_job(past_job)
+        store.update_sniper_job(job_id, {'status': 'active'})
+
+        claimed = store.claim_next_sniper_job()
+        assert claimed is None
+
+    def test_increment_poll_count_nonexistent(self, store):
+        """Test incrementing poll count for a nonexistent job returns False."""
+        result = store.increment_poll_count(99999)
+        assert result is False

@@ -364,6 +364,27 @@ class ReservationStore:
         self.conn.commit()
         return cursor.rowcount > 0
 
+    def cancel_sibling_sniper_jobs(self, job_id: int, venue_slug: str, date: str) -> int:
+        """Cancel other pending/active sniper jobs for the same venue and date.
+
+        Args:
+            job_id: The job to exclude (the one that just succeeded)
+            venue_slug: Venue slug to match
+            date: Date to match
+
+        Returns:
+            Number of jobs cancelled
+        """
+        cursor = self.conn.cursor()
+        now = _now_est()
+        cursor.execute(
+            "UPDATE sniper_jobs SET status = 'cancelled', updated_at = ? "
+            "WHERE venue_slug = ? AND date = ? AND id != ? AND status IN ('pending', 'active')",
+            (now, venue_slug, date, job_id)
+        )
+        self.conn.commit()
+        return cursor.rowcount
+
     def increment_poll_count(self, job_id: int) -> bool:
         """Increment the poll_count for a sniper job."""
         cursor = self.conn.cursor()
