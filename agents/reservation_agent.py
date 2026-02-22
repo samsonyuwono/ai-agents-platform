@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 from utils.resy_client import ResyClient
 from utils.reservation_store import ReservationStore
 from utils.email_sender import EmailSender
-from utils.slug_utils import parse_config_id
+from utils.slug_utils import parse_config_id, normalize_slug
 from config.settings import Settings
 
 
@@ -81,7 +81,7 @@ IMPORTANT BEHAVIORS:
 - If make_resy_reservation returns an unconfirmed status (success but no confirmation number), tell the user the booking was likely submitted and to check their email/Resy app for confirmation. Do NOT say it failed.
 - If make_resy_reservation returns status 'conflict', the user already has a reservation that conflicts with this time slot (possibly at a different restaurant). Present the conflict details (the conflicting restaurant name and message) and ask the user whether they want to cancel the existing reservation and continue with the new booking, or keep the existing reservation. Then call resolve_reservation_conflict with their choice.
 - Answer follow-up questions from conversation context when possible — don't re-call tools for data you already have.
-- When the user wants to snipe or schedule a reservation for a future drop, use the schedule_sniper tool. Ask for the restaurant slug, date, preferred time, and drop time (when availability opens)."""
+- When the user wants to snipe or schedule a reservation for a future drop, use the schedule_sniper tool. Ask for the restaurant name (or slug), date, preferred time, and drop time (when availability opens). Use the slug from search results if available, otherwise the agent will convert the name automatically. If the sniper fails because the slug couldn't be resolved, ask the user for the exact slug from the Resy URL."""
 
     def define_tools(self):
         """Define Claude tools for reservation tasks."""
@@ -220,9 +220,9 @@ IMPORTANT BEHAVIORS:
                 "input_schema": {
                     "type": "object",
                     "properties": {
-                        "venue_slug": {
+                        "restaurant": {
                             "type": "string",
-                            "description": "Restaurant slug from Resy URL (e.g., 'fish-cheeks', 'temple-court')"
+                            "description": "Restaurant name or Resy slug (e.g., 'Fish Cheeks' or 'fish-cheeks')"
                         },
                         "date": {
                             "type": "string",
@@ -241,7 +241,7 @@ IMPORTANT BEHAVIORS:
                             "description": "When availability drops, ISO datetime (e.g., '2026-02-22T09:00:00')"
                         }
                     },
-                    "required": ["venue_slug", "date", "preferred_time", "drop_time"]
+                    "required": ["restaurant", "date", "preferred_time", "drop_time"]
                 }
             }
         ]
@@ -277,6 +277,7 @@ IMPORTANT BEHAVIORS:
                     formatted.append({
                         'id': r.get('id'),
                         'name': r.get('name'),
+                        'slug': r.get('url_slug'),
                         'location': location_str,
                         'price_range': r.get('price_range'),
                         'rating': r.get('rating')
@@ -469,9 +470,15 @@ IMPORTANT BEHAVIORS:
 
     def _schedule_sniper(self, tool_input: dict) -> dict:
         """Schedule a sniper job, remotely via SSH if configured, otherwise locally."""
+        import shlex
         import subprocess
 
-        venue_slug = tool_input["venue_slug"]
+        restaurant = tool_input["restaurant"]
+        # If it looks like a human name (has spaces or uppercase), convert to slug
+        if ' ' in restaurant or restaurant != restaurant.lower():
+            venue_slug = normalize_slug(restaurant)
+        else:
+            venue_slug = restaurant
         date = tool_input["date"]
         preferred_time = tool_input["preferred_time"]
         party_size = tool_input.get("party_size", Settings.DEFAULT_PARTY_SIZE)
@@ -480,19 +487,34 @@ IMPORTANT BEHAVIORS:
         remote_host = Settings.SNIPER_REMOTE_HOST
         if remote_host:
             remote_dir = Settings.SNIPER_REMOTE_DIR
+            remote_cmd = (
+                f"cd {shlex.quote(remote_dir)} && python3 scripts/run_sniper.py "
+                f"{shlex.quote(venue_slug)} {shlex.quote(date)} {shlex.quote(preferred_time)} "
+                f"--party-size {shlex.quote(str(party_size))} --at {shlex.quote(drop_time)}"
+            )
             cmd = [
                 "ssh", "-o", "StrictHostKeyChecking=accept-new", remote_host,
-                f"cd {remote_dir} && python3 scripts/run_sniper.py "
-                f"{venue_slug} {date} '{preferred_time}' "
-                f"--party-size {party_size} --at '{drop_time}'"
+                remote_cmd,
             ]
             try:
                 result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
                 output = result.stdout.strip()
                 if result.returncode == 0:
+                    # Save a local record so we can track remote jobs
+                    job_id = self.store.add_sniper_job({
+                        'venue_slug': venue_slug,
+                        'date': date,
+                        'preferred_times': [preferred_time],
+                        'party_size': party_size,
+                        'scheduled_at': drop_time,
+                        'auto_resolve_conflicts': True,
+                        'notes': f'remote:{remote_host}',
+                    })
                     return {
                         'success': True,
+                        'job_id': job_id,
                         'message': f"Remote sniper scheduled on server: {output}",
+                        'venue_slug': venue_slug,
                         'remote': True,
                     }
                 else:
@@ -521,6 +543,7 @@ IMPORTANT BEHAVIORS:
             return {
                 'success': True,
                 'job_id': job_id,
+                'venue_slug': venue_slug,
                 'message': (
                     f"Sniper job #{job_id} scheduled for {venue_slug} "
                     f"on {date} at {preferred_time}. "
