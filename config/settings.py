@@ -52,6 +52,8 @@ class Settings:
     SNIPER_POLL_INTERVAL_SECONDS = int(os.environ.get("SNIPER_POLL_INTERVAL_SECONDS", "5"))
     SNIPER_MAX_ATTEMPTS = int(os.environ.get("SNIPER_MAX_ATTEMPTS", "60"))
     SNIPER_DEFAULT_TIME_WINDOW_MINUTES = int(os.environ.get("SNIPER_DEFAULT_TIME_WINDOW_MINUTES", "60"))
+    SNIPER_REMOTE_HOST = os.environ.get("SNIPER_REMOTE_HOST")  # e.g., "root@159.89.41.103"
+    SNIPER_REMOTE_DIR = os.environ.get("SNIPER_REMOTE_DIR", "/root/ai-agents")
 
     # Model Configuration
     DEFAULT_MODEL = "claude-sonnet-4-20250514"

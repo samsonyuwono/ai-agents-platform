@@ -439,30 +439,7 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "schedule_sniper":
-            from utils.reservation_sniper import ReservationSniper
-
-            sniper = ReservationSniper(
-                client=self.resy_client,
-                store=self.store,
-            )
-            job_id = sniper.create_job(
-                venue_slug=tool_input["venue_slug"],
-                date=tool_input["date"],
-                preferred_times=[tool_input["preferred_time"]],
-                party_size=tool_input.get("party_size", Settings.DEFAULT_PARTY_SIZE),
-                scheduled_at=tool_input["drop_time"],
-                auto_resolve_conflicts=True,
-            )
-            return {
-                'success': True,
-                'job_id': job_id,
-                'message': (
-                    f"Sniper job #{job_id} scheduled for {tool_input['venue_slug']} "
-                    f"on {tool_input['date']} at {tool_input['preferred_time']}. "
-                    f"Will start polling at {tool_input['drop_time']}. "
-                    f"Run `python3 scripts/run_sniper.py --cron` to execute when ready."
-                ),
-            }
+            return self._schedule_sniper(tool_input)
 
         else:
             return {
@@ -489,6 +466,68 @@ IMPORTANT BEHAVIORS:
             'confirmation_number': result.get('reservation_id'),
             'status': status
         })
+
+    def _schedule_sniper(self, tool_input: dict) -> dict:
+        """Schedule a sniper job, remotely via SSH if configured, otherwise locally."""
+        import subprocess
+
+        venue_slug = tool_input["venue_slug"]
+        date = tool_input["date"]
+        preferred_time = tool_input["preferred_time"]
+        party_size = tool_input.get("party_size", Settings.DEFAULT_PARTY_SIZE)
+        drop_time = tool_input["drop_time"]
+
+        remote_host = Settings.SNIPER_REMOTE_HOST
+        if remote_host:
+            remote_dir = Settings.SNIPER_REMOTE_DIR
+            cmd = [
+                "ssh", "-o", "StrictHostKeyChecking=accept-new", remote_host,
+                f"cd {remote_dir} && python3 scripts/run_sniper.py "
+                f"{venue_slug} {date} '{preferred_time}' "
+                f"--party-size {party_size} --at '{drop_time}'"
+            ]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                output = result.stdout.strip()
+                if result.returncode == 0:
+                    return {
+                        'success': True,
+                        'message': f"Remote sniper scheduled on server: {output}",
+                        'remote': True,
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': f"SSH command failed: {result.stderr.strip()}",
+                    }
+            except subprocess.TimeoutExpired:
+                return {'success': False, 'error': 'SSH connection timed out'}
+            except Exception as e:
+                return {'success': False, 'error': f'SSH failed: {e}'}
+        else:
+            from utils.reservation_sniper import ReservationSniper
+            sniper = ReservationSniper(
+                client=self.resy_client,
+                store=self.store,
+            )
+            job_id = sniper.create_job(
+                venue_slug=venue_slug,
+                date=date,
+                preferred_times=[preferred_time],
+                party_size=party_size,
+                scheduled_at=drop_time,
+                auto_resolve_conflicts=True,
+            )
+            return {
+                'success': True,
+                'job_id': job_id,
+                'message': (
+                    f"Sniper job #{job_id} scheduled for {venue_slug} "
+                    f"on {date} at {preferred_time}. "
+                    f"Will start polling at {drop_time}. "
+                    f"Run `python3 scripts/run_sniper.py --cron` to execute when ready."
+                ),
+            }
 
     def _format_confirmation_email(self, result, booking_info):
         """Format a confirmation email in markdown."""
