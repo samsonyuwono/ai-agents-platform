@@ -7,6 +7,7 @@ matching slot, auto-resolving conflicts if configured.
 import logging
 import signal
 import time
+from collections import Counter
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -51,6 +52,18 @@ class ReservationSniper:
         logger.info("Shutdown signal received, finishing current poll...")
         self._shutdown = True
 
+    def close(self):
+        """Clean up browser client and database connection."""
+        if self._client is not None and hasattr(self._client, '_cleanup'):
+            self._client._cleanup()
+        self._store.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()
+
     def create_job(
         self,
         venue_slug: str,
@@ -86,6 +99,11 @@ class ReservationSniper:
         if scheduled_at is None:
             scheduled_at = datetime.now().isoformat()
 
+        try:
+            datetime.fromisoformat(scheduled_at)
+        except (ValueError, TypeError):
+            raise ValueError(f"Invalid scheduled_at datetime: {scheduled_at!r}")
+
         job_id = self._store.add_sniper_job({
             'venue_slug': venue_slug,
             'date': date,
@@ -119,12 +137,24 @@ class ReservationSniper:
         logger.info("Starting sniper job #%d: %s on %s", job_id, job['venue_slug'], job['date'])
 
         poll_interval = Settings.SNIPER_POLL_INTERVAL_SECONDS
+        event_only_count = 0  # Track polls where only event card slots were found
+        error_counts = Counter()  # Track poll error frequencies
 
         while not self._shutdown:
             # Refresh job to get current poll_count
             job = self._store.get_sniper_job(job_id)
             if job['poll_count'] >= job['max_attempts']:
                 reason = f"Max attempts ({job['max_attempts']}) reached"
+                if error_counts:
+                    reason += "\n\n## Poll Errors"
+                    for error, count in error_counts.most_common():
+                        reason += f"\n- {error} ({count}x)"
+                if event_only_count > 0:
+                    reason += (
+                        f"\n\nNote: {event_only_count} poll(s) found only event-style listings "
+                        f"(DayOfEventCard UI) instead of standard time slots. "
+                        f"This venue may only have special event bookings for this date."
+                    )
                 self._store.update_sniper_job(job_id, {'status': 'failed'})
                 self._notifier.notify_failure(job, reason)
                 logger.warning("Sniper job #%d failed: %s", job_id, reason)
@@ -150,6 +180,13 @@ class ReservationSniper:
                     'reservation_id': res_id,
                 })
 
+                # Cancel other jobs for the same venue/date to avoid duplicate bookings
+                cancelled = self._store.cancel_sibling_sniper_jobs(
+                    job_id, job['venue_slug'], job['date']
+                )
+                if cancelled:
+                    logger.info("Cancelled %d sibling job(s) for %s on %s", cancelled, job['venue_slug'], job['date'])
+
                 # Refresh job for notification
                 job = self._store.get_sniper_job(job_id)
                 self._notifier.notify_success(job, result)
@@ -162,7 +199,10 @@ class ReservationSniper:
                 }
 
             # Not booked yet — wait and retry
+            if result.get('event_only'):
+                event_only_count += 1
             if result.get('error'):
+                error_counts[result['error']] += 1
                 logger.warning("Poll error on job #%d: %s", job_id, result['error'])
 
             time.sleep(poll_interval)
@@ -187,11 +227,13 @@ class ReservationSniper:
                 date=job['date'],
                 party_size=job['party_size'],
             )
-        except Exception as e:
+        except Exception as e:  # Broad catch: sniper retries on any transient error
             return {'booked': False, 'error': f'Availability check failed: {e}'}
 
         if not slots:
             return {'booked': False, 'error': 'No slots available'}
+
+        event_only = all(s.get('type') == 'event' for s in slots)
 
         best = pick_best_slot(
             slots,
@@ -200,7 +242,7 @@ class ReservationSniper:
         )
 
         if not best:
-            return {'booked': False, 'error': 'No matching slots in time window'}
+            return {'booked': False, 'error': 'No matching slots in time window', 'event_only': event_only}
 
         # Attempt booking
         config_id = best.get('config_id')
@@ -213,7 +255,7 @@ class ReservationSniper:
                 date=job['date'],
                 party_size=job['party_size'],
             )
-        except Exception as e:
+        except Exception as e:  # Broad catch: sniper retries on any transient error
             return {'booked': False, 'error': f'Booking failed: {e}'}
 
         if result.get('success'):
@@ -258,7 +300,7 @@ class ReservationSniper:
                 venue_slug=venue_slug,
                 time_text=time_text,
             )
-        except Exception as e:
+        except Exception as e:  # Broad catch: sniper retries on any transient error
             return {'booked': False, 'error': f'Conflict resolution failed: {e}'}
 
         if result.get('success'):
@@ -274,21 +316,21 @@ class ReservationSniper:
     def run_scheduled_jobs(self) -> Dict:
         """Run all pending sniper jobs whose scheduled_at has passed.
 
-        Intended to be called by cron every minute.
+        Uses atomic claim to prevent two concurrent cron processes from
+        picking up the same job.  Intended to be called by cron every minute.
 
         Returns:
             Dict with results per job ID
         """
-        jobs = self._store.get_pending_sniper_jobs()
-        if not jobs:
-            logger.debug("No pending sniper jobs to run")
-            return {'jobs_run': 0, 'results': {}}
-
         results = {}
-        for job in jobs:
-            if self._shutdown:
+        while not self._shutdown:
+            job = self._store.claim_next_sniper_job()
+            if not job:
                 break
             logger.info("Running scheduled sniper job #%d", job['id'])
             results[job['id']] = self.run_job(job['id'])
+
+        if not results:
+            logger.debug("No pending sniper jobs to run")
 
         return {'jobs_run': len(results), 'results': results}

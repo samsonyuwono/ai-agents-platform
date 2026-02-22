@@ -309,3 +309,107 @@ class TestReservationSniper:
 
         assert result['booked'] is False
         assert 'Network error' in result['error']
+
+    @patch('utils.reservation_sniper.time.sleep')
+    def test_shutdown_pauses_job(self, mock_sleep, sniper, store, mock_client):
+        """Test run_job returns 'shutdown' and reverts status when shutdown is set."""
+        mock_client.get_availability.return_value = []
+
+        job_id = sniper.create_job(
+            venue_slug='test', date='2026-03-01', preferred_times=['7:00 PM'],
+            scheduled_at='2020-01-01T00:00:00',
+        )
+        # Set shutdown flag before running so the loop exits immediately
+        sniper._shutdown = True
+
+        result = sniper.run_job(job_id)
+
+        assert result['outcome'] == 'shutdown'
+        job = store.get_sniper_job(job_id)
+        assert job['status'] == 'pending'
+
+    def test_close_cleans_up_resources(self, store, mock_notifier):
+        """Test close() calls _cleanup on client and close on store."""
+        mock_client = MagicMock()
+        mock_client._cleanup = MagicMock()
+        mock_store = MagicMock()
+
+        sniper = ReservationSniper(
+            client=mock_client, store=mock_store, notifier=mock_notifier,
+        )
+        sniper.close()
+
+        mock_client._cleanup.assert_called_once()
+        mock_store.close.assert_called_once()
+
+    def test_context_manager_calls_close(self, store, mock_notifier):
+        """Test that using 'with' block calls close on exit."""
+        mock_client = MagicMock()
+        mock_client._cleanup = MagicMock()
+        mock_store = MagicMock()
+
+        with ReservationSniper(
+            client=mock_client, store=mock_store, notifier=mock_notifier,
+        ) as sniper:
+            assert sniper is not None
+
+        mock_client._cleanup.assert_called_once()
+        mock_store.close.assert_called_once()
+
+    def test_create_job_invalid_scheduled_at(self, sniper):
+        """Test create_job raises ValueError for invalid scheduled_at."""
+        with pytest.raises(ValueError, match="Invalid scheduled_at"):
+            sniper.create_job(
+                venue_slug='test',
+                date='2026-03-01',
+                preferred_times=['7:00 PM'],
+                scheduled_at='not-a-date',
+            )
+
+    @patch('utils.reservation_sniper.time.sleep')
+    def test_poll_once_conflict_no_auto_resolve(self, mock_sleep, sniper, store, mock_client):
+        """Test _poll_once returns error on conflict when auto_resolve is off."""
+        mock_client.get_availability.return_value = [
+            {'time': '7:00 PM', 'config_id': 'test|||2026-03-01|||7:00 PM'},
+        ]
+        mock_client.make_reservation.return_value = {
+            'success': False,
+            'status': 'conflict',
+        }
+
+        job_id = sniper.create_job(
+            venue_slug='test', date='2026-03-01', preferred_times=['7:00 PM'],
+            auto_resolve_conflicts=False, scheduled_at='2020-01-01T00:00:00',
+        )
+        job = store.get_sniper_job(job_id)
+        result = sniper._poll_once(job)
+
+        assert result['booked'] is False
+        mock_client.resolve_reservation_conflict.assert_not_called()
+
+    @patch('utils.reservation_sniper.time.sleep')
+    def test_poll_once_conflict_resolve_parse_failure(self, mock_sleep, sniper, store, mock_client):
+        """Test conflict resolution falls back to job venue_slug when config_id parse fails."""
+        mock_client.get_availability.return_value = [
+            {'time': '7:00 PM', 'config_id': 'bad-config-id'},
+        ]
+        mock_client.make_reservation.return_value = {
+            'success': False,
+            'status': 'conflict',
+        }
+        mock_client.resolve_reservation_conflict.return_value = {
+            'success': True,
+            'reservation_id': 'RES999',
+        }
+
+        job_id = sniper.create_job(
+            venue_slug='test-venue', date='2026-03-01', preferred_times=['7:00 PM'],
+            auto_resolve_conflicts=True, scheduled_at='2020-01-01T00:00:00',
+        )
+        job = store.get_sniper_job(job_id)
+        result = sniper._poll_once(job)
+
+        assert result['booked'] is True
+        # Verify fallback used job's venue_slug
+        call_kwargs = mock_client.resolve_reservation_conflict.call_args[1]
+        assert call_kwargs['venue_slug'] == 'test-venue'
