@@ -53,6 +53,7 @@ class ReservationAgent(BaseAgent):
 CRITICAL DATE PARSING RULES:
 - Today's date is {today_str}
 - Current time is {time_str}
+- All times are in Eastern Time (EST/EDT). Always use ET for drop times and scheduling.
 - Current year is {current_year}
 - When parsing dates:
   * If user says "Feb 25" or "February 25" without a year, assume {current_year}

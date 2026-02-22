@@ -7,8 +7,16 @@ import json
 import sqlite3
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import List, Dict, Optional
 from config.settings import Settings
+
+_EST = ZoneInfo("America/New_York")
+
+
+def _now_est() -> str:
+    """Return current EST/EDT time as naive ISO string."""
+    return datetime.now(_EST).replace(tzinfo=None).isoformat()
 
 
 class ReservationStore:
@@ -87,7 +95,7 @@ class ReservationStore:
             int: The ID of the newly created reservation
         """
         cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
+        now = _now_est()
 
         cursor.execute('''
             INSERT INTO reservations (
@@ -174,7 +182,7 @@ class ReservationStore:
             bool: True if updated successfully, False otherwise
         """
         cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
+        now = _now_est()
 
         if notes:
             cursor.execute('''
@@ -223,6 +231,13 @@ class ReservationStore:
 
     # --- Sniper Jobs ---
 
+    def _deserialize_sniper_job(self, row) -> Dict:
+        """Convert a sniper_jobs row to a dict with JSON/bool deserialization."""
+        d = dict(row)
+        d['preferred_times'] = json.loads(d['preferred_times'])
+        d['auto_resolve_conflicts'] = bool(d['auto_resolve_conflicts'])
+        return d
+
     def add_sniper_job(self, data: Dict) -> int:
         """Add a new sniper job.
 
@@ -235,7 +250,7 @@ class ReservationStore:
             ID of the created job
         """
         cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
+        now = _now_est()
 
         preferred_times = data.get('preferred_times', [])
         if isinstance(preferred_times, list):
@@ -273,40 +288,51 @@ class ReservationStore:
         row = cursor.fetchone()
         if not row:
             return None
-        result = dict(row)
-        result['preferred_times'] = json.loads(result['preferred_times'])
-        result['auto_resolve_conflicts'] = bool(result['auto_resolve_conflicts'])
-        return result
+        return self._deserialize_sniper_job(row)
 
     def get_pending_sniper_jobs(self) -> List[Dict]:
         """Get sniper jobs whose scheduled_at has passed and status is pending."""
         cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
+        now = _now_est()
         cursor.execute(
             "SELECT * FROM sniper_jobs WHERE status = 'pending' AND scheduled_at <= ? ORDER BY scheduled_at",
             (now,)
         )
         rows = cursor.fetchall()
-        results = []
-        for row in rows:
-            d = dict(row)
-            d['preferred_times'] = json.loads(d['preferred_times'])
-            d['auto_resolve_conflicts'] = bool(d['auto_resolve_conflicts'])
-            results.append(d)
-        return results
+        return [self._deserialize_sniper_job(row) for row in rows]
 
     def get_all_sniper_jobs(self) -> List[Dict]:
         """Get all sniper jobs."""
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM sniper_jobs ORDER BY created_at DESC")
         rows = cursor.fetchall()
-        results = []
-        for row in rows:
-            d = dict(row)
-            d['preferred_times'] = json.loads(d['preferred_times'])
-            d['auto_resolve_conflicts'] = bool(d['auto_resolve_conflicts'])
-            results.append(d)
-        return results
+        return [self._deserialize_sniper_job(row) for row in rows]
+
+    def claim_next_sniper_job(self) -> Optional[Dict]:
+        """Atomically claim the next due pending sniper job.
+
+        Uses SELECT then UPDATE WHERE status='pending' to prevent two
+        concurrent cron processes from claiming the same job.
+
+        Returns:
+            Claimed job dict, or None if no due jobs
+        """
+        cursor = self.conn.cursor()
+        now = _now_est()
+        cursor.execute(
+            "SELECT id FROM sniper_jobs WHERE status = 'pending' AND scheduled_at <= ? "
+            "ORDER BY scheduled_at LIMIT 1", (now,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        job_id = row['id']
+        cursor.execute(
+            "UPDATE sniper_jobs SET status = 'active', updated_at = ? "
+            "WHERE id = ? AND status = 'pending'", (now, job_id))
+        self.conn.commit()
+        if cursor.rowcount == 0:
+            return None  # Another process claimed it
+        return self.get_sniper_job(job_id)
 
     def update_sniper_job(self, job_id: int, updates: Dict) -> bool:
         """Update fields on a sniper job.
@@ -321,7 +347,7 @@ class ReservationStore:
         if not updates:
             return False
 
-        now = datetime.now().isoformat()
+        now = _now_est()
         updates['updated_at'] = now
 
         # Serialize preferred_times if present
@@ -341,7 +367,7 @@ class ReservationStore:
     def increment_poll_count(self, job_id: int) -> bool:
         """Increment the poll_count for a sniper job."""
         cursor = self.conn.cursor()
-        now = datetime.now().isoformat()
+        now = _now_est()
         cursor.execute(
             "UPDATE sniper_jobs SET poll_count = poll_count + 1, updated_at = ? WHERE id = ?",
             (now, job_id)
