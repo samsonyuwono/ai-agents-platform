@@ -110,3 +110,26 @@ class TestPickBestSlot:
     def test_multiple_preferred_times(self, sample_slots):
         result = pick_best_slot(sample_slots, ["7:00 PM", "8:00 PM"])
         assert result['time'] == '7:00 PM'  # First preferred, exact match
+
+
+class TestEdgeCases:
+    """Test edge cases in filtering."""
+
+    def test_filter_slots_unparseable_time_skipped(self):
+        """Test that a slot with an unparseable time is silently dropped."""
+        slots = [
+            {'time': 'invalid', 'config_id': 'a'},
+            {'time': '7:00 PM', 'config_id': 'b'},
+        ]
+        result = filter_slots_by_time(slots, ["7:00 PM"], window_minutes=60)
+        assert len(result) == 1
+        assert result[0]['time'] == '7:00 PM'
+
+    def test_filter_all_preferred_unparseable_returns_all(self):
+        """Test that if all preferred times are unparseable, all slots are returned."""
+        slots = [
+            {'time': '6:00 PM', 'config_id': 'a'},
+            {'time': '7:00 PM', 'config_id': 'b'},
+        ]
+        result = filter_slots_by_time(slots, ["bad", "also_bad"], window_minutes=60)
+        assert len(result) == 2

@@ -130,3 +130,40 @@ class TestFormatting:
         body = _format_success(job, reservation)
         assert 'test' in body
         assert 'N/A' in body  # Missing time_slot and reservation_id
+
+
+class TestNotificationSendFailures:
+    """Test notification behavior when sender.send returns False."""
+
+    @pytest.fixture
+    def failing_sender(self):
+        sender = MagicMock()
+        sender.send.return_value = False
+        return sender
+
+    @pytest.fixture
+    def sample_job(self):
+        return {
+            'venue_slug': 'fish-cheeks',
+            'date': '2026-03-01',
+            'preferred_times': ['7:00 PM'],
+            'party_size': 2,
+            'poll_count': 5,
+            'max_attempts': 60,
+        }
+
+    def test_notify_success_send_fails(self, failing_sender, sample_job):
+        """Test notify_success returns False when send fails."""
+        n = SniperNotifier(email_sender=failing_sender)
+        n._to_email = "test@example.com"
+
+        result = n.notify_success(sample_job, {'time_slot': '7:00 PM', 'reservation_id': 'R1'})
+        assert result is False
+
+    def test_notify_failure_send_fails(self, failing_sender, sample_job):
+        """Test notify_failure returns False when send fails."""
+        n = SniperNotifier(email_sender=failing_sender)
+        n._to_email = "test@example.com"
+
+        result = n.notify_failure(sample_job, "Max attempts reached")
+        assert result is False
