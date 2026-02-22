@@ -46,53 +46,51 @@ def setup_logging(verbose: bool = False):
 
 def cmd_create_and_run(args):
     """Create a sniper job and optionally run it immediately."""
-    sniper = ReservationSniper()
+    with ReservationSniper() as sniper:
+        preferred_times = args.times if args.times else []
 
-    preferred_times = args.times if args.times else []
+        job_id = sniper.create_job(
+            venue_slug=args.venue_slug,
+            date=args.date,
+            preferred_times=preferred_times,
+            party_size=args.party_size,
+            time_window_minutes=args.window,
+            max_attempts=args.max_attempts,
+            scheduled_at=args.at,
+            auto_resolve_conflicts=True,
+        )
 
-    job_id = sniper.create_job(
-        venue_slug=args.venue_slug,
-        date=args.date,
-        preferred_times=preferred_times,
-        party_size=args.party_size,
-        time_window_minutes=args.window,
-        max_attempts=args.max_attempts,
-        scheduled_at=args.at,
-        auto_resolve_conflicts=True,
-    )
-
-    if args.at:
-        print(f"Sniper job #{job_id} scheduled. Will fire at {args.at}")
-        print(f"Set up cron to run: python3 scripts/run_sniper.py --cron")
-    else:
-        print(f"Sniper job #{job_id} created. Running now...")
-        result = sniper.run_job(job_id)
-        print(f"Result: {result['outcome']}")
-        if result['outcome'] == 'booked':
-            print(f"  Time: {result.get('time')}")
-            print(f"  Reservation ID: {result.get('reservation_id')}")
-        elif result['outcome'] == 'failed':
-            print(f"  Reason: {result.get('reason')}")
+        if args.at:
+            print(f"Sniper job #{job_id} scheduled. Will fire at {args.at}")
+            print(f"Set up cron to run: python3 scripts/run_sniper.py --cron")
+        else:
+            print(f"Sniper job #{job_id} created. Running now...")
+            result = sniper.run_job(job_id)
+            print(f"Result: {result['outcome']}")
+            if result['outcome'] == 'booked':
+                print(f"  Time: {result.get('time')}")
+                print(f"  Reservation ID: {result.get('reservation_id')}")
+            elif result['outcome'] == 'failed':
+                print(f"  Reason: {result.get('reason')}")
 
 
 def cmd_cron(args):
     """Process all due scheduled jobs."""
-    sniper = ReservationSniper()
-    result = sniper.run_scheduled_jobs()
+    with ReservationSniper() as sniper:
+        result = sniper.run_scheduled_jobs()
 
-    if result['jobs_run'] == 0:
-        logging.getLogger(__name__).debug("No jobs to run")
-    else:
-        print(f"Ran {result['jobs_run']} job(s)")
-        for job_id, outcome in result['results'].items():
-            print(f"  Job #{job_id}: {outcome['outcome']}")
+        if result['jobs_run'] == 0:
+            logging.getLogger(__name__).debug("No jobs to run")
+        else:
+            print(f"Ran {result['jobs_run']} job(s)")
+            for job_id, outcome in result['results'].items():
+                print(f"  Job #{job_id}: {outcome['outcome']}")
 
 
 def cmd_list(args):
     """List all sniper jobs."""
-    store = ReservationStore()
-    jobs = store.get_all_sniper_jobs()
-    store.close()
+    with ReservationStore() as store:
+        jobs = store.get_all_sniper_jobs()
 
     if not jobs:
         print("No sniper jobs found.")
@@ -111,22 +109,19 @@ def cmd_list(args):
 
 def cmd_cancel(args):
     """Cancel a sniper job."""
-    store = ReservationStore()
-    job = store.get_sniper_job(args.cancel)
+    with ReservationStore() as store:
+        job = store.get_sniper_job(args.cancel)
 
-    if not job:
-        print(f"Job #{args.cancel} not found.")
-        store.close()
-        return
+        if not job:
+            print(f"Job #{args.cancel} not found.")
+            return
 
-    if job['status'] in ('completed', 'failed'):
-        print(f"Job #{args.cancel} is already {job['status']}.")
-        store.close()
-        return
+        if job['status'] in ('completed', 'failed'):
+            print(f"Job #{args.cancel} is already {job['status']}.")
+            return
 
-    store.update_sniper_job(args.cancel, {'status': 'cancelled'})
-    store.close()
-    print(f"Job #{args.cancel} cancelled.")
+        store.update_sniper_job(args.cancel, {'status': 'cancelled'})
+        print(f"Job #{args.cancel} cancelled.")
 
 
 def main():
