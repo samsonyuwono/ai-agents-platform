@@ -3,6 +3,7 @@
 import pytest
 import os
 import tempfile
+from datetime import datetime, timedelta
 from utils.reservation_store import ReservationStore
 
 
@@ -155,3 +156,142 @@ class TestReservationStore:
 
         assert result['created_at'] is not None
         assert result['updated_at'] is not None
+
+
+class TestSniperJobs:
+    """Test sniper_jobs table operations."""
+
+    @pytest.fixture
+    def store(self):
+        """Create a temporary ReservationStore."""
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
+            db_path = f.name
+
+        store = ReservationStore(db_path=db_path)
+        yield store
+        store.close()
+        os.unlink(db_path)
+
+    @pytest.fixture
+    def sample_job(self):
+        """Sample sniper job data."""
+        return {
+            'venue_slug': 'fish-cheeks',
+            'date': '2026-03-01',
+            'preferred_times': ['7:00 PM', '7:30 PM'],
+            'party_size': 2,
+            'time_window_minutes': 60,
+            'max_attempts': 60,
+            'scheduled_at': '2026-02-22T09:00:00',
+            'auto_resolve_conflicts': True,
+            'notes': 'Test sniper job',
+        }
+
+    def test_add_sniper_job(self, store, sample_job):
+        """Test creating a sniper job."""
+        job_id = store.add_sniper_job(sample_job)
+
+        assert job_id is not None
+        assert job_id > 0
+
+    def test_get_sniper_job(self, store, sample_job):
+        """Test retrieving a sniper job by ID."""
+        job_id = store.add_sniper_job(sample_job)
+        job = store.get_sniper_job(job_id)
+
+        assert job is not None
+        assert job['venue_slug'] == 'fish-cheeks'
+        assert job['date'] == '2026-03-01'
+        assert job['preferred_times'] == ['7:00 PM', '7:30 PM']
+        assert job['party_size'] == 2
+        assert job['status'] == 'pending'
+        assert job['poll_count'] == 0
+        assert job['auto_resolve_conflicts'] is True
+        assert job['notes'] == 'Test sniper job'
+
+    def test_get_sniper_job_not_found(self, store):
+        """Test retrieving a non-existent sniper job."""
+        assert store.get_sniper_job(999) is None
+
+    def test_get_pending_sniper_jobs(self, store, sample_job):
+        """Test getting pending jobs whose scheduled_at has passed."""
+        # Past job — should be returned
+        past_job = {**sample_job, 'scheduled_at': '2020-01-01T09:00:00'}
+        past_id = store.add_sniper_job(past_job)
+
+        # Future job — should NOT be returned
+        future_job = {**sample_job, 'scheduled_at': '2099-01-01T09:00:00'}
+        store.add_sniper_job(future_job)
+
+        pending = store.get_pending_sniper_jobs()
+        assert len(pending) == 1
+        assert pending[0]['id'] == past_id
+
+    def test_get_pending_excludes_non_pending(self, store, sample_job):
+        """Test that completed/failed jobs are excluded."""
+        past_job = {**sample_job, 'scheduled_at': '2020-01-01T09:00:00'}
+        job_id = store.add_sniper_job(past_job)
+        store.update_sniper_job(job_id, {'status': 'completed'})
+
+        pending = store.get_pending_sniper_jobs()
+        assert len(pending) == 0
+
+    def test_update_sniper_job(self, store, sample_job):
+        """Test updating sniper job fields."""
+        job_id = store.add_sniper_job(sample_job)
+
+        success = store.update_sniper_job(job_id, {'status': 'active', 'notes': 'Running'})
+        assert success is True
+
+        job = store.get_sniper_job(job_id)
+        assert job['status'] == 'active'
+        assert job['notes'] == 'Running'
+
+    def test_update_sniper_job_not_found(self, store):
+        """Test updating a non-existent job returns False."""
+        assert store.update_sniper_job(999, {'status': 'active'}) is False
+
+    def test_update_sniper_job_empty_updates(self, store, sample_job):
+        """Test updating with empty dict returns False."""
+        job_id = store.add_sniper_job(sample_job)
+        assert store.update_sniper_job(job_id, {}) is False
+
+    def test_increment_poll_count(self, store, sample_job):
+        """Test incrementing poll count."""
+        job_id = store.add_sniper_job(sample_job)
+
+        store.increment_poll_count(job_id)
+        store.increment_poll_count(job_id)
+        store.increment_poll_count(job_id)
+
+        job = store.get_sniper_job(job_id)
+        assert job['poll_count'] == 3
+
+    def test_get_all_sniper_jobs(self, store, sample_job):
+        """Test listing all sniper jobs."""
+        store.add_sniper_job(sample_job)
+        store.add_sniper_job({**sample_job, 'venue_slug': 'temple-court'})
+
+        jobs = store.get_all_sniper_jobs()
+        assert len(jobs) == 2
+
+    def test_sniper_job_reservation_link(self, store, sample_job):
+        """Test linking a sniper job to a reservation."""
+        job_id = store.add_sniper_job(sample_job)
+
+        res_id = store.add_reservation({
+            'platform': 'resy',
+            'restaurant_name': 'Fish Cheeks',
+            'date': '2026-03-01',
+            'time': '7:00 PM',
+            'party_size': 2,
+        })
+
+        store.update_sniper_job(job_id, {
+            'status': 'completed',
+            'reservation_id': res_id,
+        })
+
+        job = store.get_sniper_job(job_id)
+        assert job['status'] == 'completed'
+        assert job['reservation_id'] == res_id

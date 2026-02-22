@@ -3,6 +3,7 @@ Reservation Database Storage
 SQLite database for tracking restaurant reservations.
 """
 
+import json
 import sqlite3
 import os
 from datetime import datetime
@@ -46,6 +47,28 @@ class ReservationStore:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 notes TEXT
+            )
+        ''')
+
+        # Sniper jobs table
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS sniper_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                venue_slug TEXT NOT NULL,
+                date TEXT NOT NULL,
+                preferred_times TEXT NOT NULL,
+                party_size INTEGER NOT NULL DEFAULT 2,
+                time_window_minutes INTEGER NOT NULL DEFAULT 60,
+                status TEXT NOT NULL DEFAULT 'pending',
+                poll_count INTEGER NOT NULL DEFAULT 0,
+                max_attempts INTEGER NOT NULL DEFAULT 60,
+                scheduled_at TEXT NOT NULL,
+                auto_resolve_conflicts INTEGER NOT NULL DEFAULT 1,
+                reservation_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                notes TEXT,
+                FOREIGN KEY (reservation_id) REFERENCES reservations(id)
             )
         ''')
 
@@ -197,6 +220,134 @@ class ReservationStore:
             'date_from': today,
             'date_to': future_date
         })
+
+    # --- Sniper Jobs ---
+
+    def add_sniper_job(self, data: Dict) -> int:
+        """Add a new sniper job.
+
+        Args:
+            data: Dict with venue_slug, date, preferred_times (list of str),
+                  party_size, time_window_minutes, max_attempts, scheduled_at,
+                  auto_resolve_conflicts (bool), notes
+
+        Returns:
+            ID of the created job
+        """
+        cursor = self.conn.cursor()
+        now = datetime.now().isoformat()
+
+        preferred_times = data.get('preferred_times', [])
+        if isinstance(preferred_times, list):
+            preferred_times = json.dumps(preferred_times)
+
+        cursor.execute('''
+            INSERT INTO sniper_jobs (
+                venue_slug, date, preferred_times, party_size,
+                time_window_minutes, status, poll_count, max_attempts,
+                scheduled_at, auto_resolve_conflicts, created_at, updated_at, notes
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            data['venue_slug'],
+            data['date'],
+            preferred_times,
+            data.get('party_size', Settings.DEFAULT_PARTY_SIZE),
+            data.get('time_window_minutes', Settings.SNIPER_DEFAULT_TIME_WINDOW_MINUTES),
+            'pending',
+            0,
+            data.get('max_attempts', Settings.SNIPER_MAX_ATTEMPTS),
+            data['scheduled_at'],
+            1 if data.get('auto_resolve_conflicts', True) else 0,
+            now,
+            now,
+            data.get('notes'),
+        ))
+
+        self.conn.commit()
+        return cursor.lastrowid
+
+    def get_sniper_job(self, job_id: int) -> Optional[Dict]:
+        """Get a sniper job by ID."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM sniper_jobs WHERE id = ?", (job_id,))
+        row = cursor.fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result['preferred_times'] = json.loads(result['preferred_times'])
+        result['auto_resolve_conflicts'] = bool(result['auto_resolve_conflicts'])
+        return result
+
+    def get_pending_sniper_jobs(self) -> List[Dict]:
+        """Get sniper jobs whose scheduled_at has passed and status is pending."""
+        cursor = self.conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute(
+            "SELECT * FROM sniper_jobs WHERE status = 'pending' AND scheduled_at <= ? ORDER BY scheduled_at",
+            (now,)
+        )
+        rows = cursor.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d['preferred_times'] = json.loads(d['preferred_times'])
+            d['auto_resolve_conflicts'] = bool(d['auto_resolve_conflicts'])
+            results.append(d)
+        return results
+
+    def get_all_sniper_jobs(self) -> List[Dict]:
+        """Get all sniper jobs."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT * FROM sniper_jobs ORDER BY created_at DESC")
+        rows = cursor.fetchall()
+        results = []
+        for row in rows:
+            d = dict(row)
+            d['preferred_times'] = json.loads(d['preferred_times'])
+            d['auto_resolve_conflicts'] = bool(d['auto_resolve_conflicts'])
+            results.append(d)
+        return results
+
+    def update_sniper_job(self, job_id: int, updates: Dict) -> bool:
+        """Update fields on a sniper job.
+
+        Args:
+            job_id: Job ID
+            updates: Dict of field -> value to update
+
+        Returns:
+            True if a row was updated
+        """
+        if not updates:
+            return False
+
+        now = datetime.now().isoformat()
+        updates['updated_at'] = now
+
+        # Serialize preferred_times if present
+        if 'preferred_times' in updates and isinstance(updates['preferred_times'], list):
+            updates['preferred_times'] = json.dumps(updates['preferred_times'])
+        if 'auto_resolve_conflicts' in updates and isinstance(updates['auto_resolve_conflicts'], bool):
+            updates['auto_resolve_conflicts'] = 1 if updates['auto_resolve_conflicts'] else 0
+
+        set_clause = ", ".join(f"{k} = ?" for k in updates)
+        values = list(updates.values()) + [job_id]
+
+        cursor = self.conn.cursor()
+        cursor.execute(f"UPDATE sniper_jobs SET {set_clause} WHERE id = ?", values)
+        self.conn.commit()
+        return cursor.rowcount > 0
+
+    def increment_poll_count(self, job_id: int) -> bool:
+        """Increment the poll_count for a sniper job."""
+        cursor = self.conn.cursor()
+        now = datetime.now().isoformat()
+        cursor.execute(
+            "UPDATE sniper_jobs SET poll_count = poll_count + 1, updated_at = ? WHERE id = ?",
+            (now, job_id)
+        )
+        self.conn.commit()
+        return cursor.rowcount > 0
 
     def close(self):
         """Close the database connection."""

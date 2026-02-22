@@ -48,6 +48,11 @@ class Settings:
     DEFAULT_PARTY_SIZE = int(os.environ.get("DEFAULT_PARTY_SIZE", "2"))
     RESERVATION_DB_PATH = os.environ.get("RESERVATION_DB_PATH", "data/reservations.db")
 
+    # Sniper Configuration
+    SNIPER_POLL_INTERVAL_SECONDS = int(os.environ.get("SNIPER_POLL_INTERVAL_SECONDS", "5"))
+    SNIPER_MAX_ATTEMPTS = int(os.environ.get("SNIPER_MAX_ATTEMPTS", "60"))
+    SNIPER_DEFAULT_TIME_WINDOW_MINUTES = int(os.environ.get("SNIPER_DEFAULT_TIME_WINDOW_MINUTES", "60"))
+
     # Model Configuration
     DEFAULT_MODEL = "claude-sonnet-4-20250514"
     MAX_TOKENS = 4096

@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 from utils.resy_client import ResyClient
 from utils.reservation_store import ReservationStore
 from utils.email_sender import EmailSender
+from utils.slug_utils import parse_config_id
 from config.settings import Settings
 
 
@@ -78,7 +79,9 @@ IMPORTANT BEHAVIORS:
 - If search_resy_restaurants finds nothing, try search_resy_by_cuisine as a fallback before telling the user.
 - If a tool returns an error or no results, explain what happened and suggest alternatives (different date, time, spelling, or cuisine search).
 - If make_resy_reservation returns an unconfirmed status (success but no confirmation number), tell the user the booking was likely submitted and to check their email/Resy app for confirmation. Do NOT say it failed.
-- Answer follow-up questions from conversation context when possible — don't re-call tools for data you already have."""
+- If make_resy_reservation returns status 'conflict', the user already has a reservation that conflicts with this time slot (possibly at a different restaurant). Present the conflict details (the conflicting restaurant name and message) and ask the user whether they want to cancel the existing reservation and continue with the new booking, or keep the existing reservation. Then call resolve_reservation_conflict with their choice.
+- Answer follow-up questions from conversation context when possible — don't re-call tools for data you already have.
+- When the user wants to snipe or schedule a reservation for a future drop, use the schedule_sniper tool. Ask for the restaurant slug, date, preferred time, and drop time (when availability opens)."""
 
     def define_tools(self):
         """Define Claude tools for reservation tasks."""
@@ -176,12 +179,69 @@ IMPORTANT BEHAVIORS:
                 }
             },
             {
+                "name": "resolve_reservation_conflict",
+                "description": "Resolve an existing reservation conflict. Use when make_resy_reservation returns status 'conflict'. 'continue_booking' cancels the existing reservation and proceeds with the new one. 'keep_existing' keeps the current reservation and aborts the new booking.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "choice": {
+                            "type": "string",
+                            "enum": ["continue_booking", "keep_existing"],
+                            "description": "continue_booking = cancel existing and book new; keep_existing = abort new booking"
+                        },
+                        "config_id": {
+                            "type": "string",
+                            "description": "config_id from the conflict result"
+                        },
+                        "date": {
+                            "type": "string",
+                            "description": "Date from the conflict result"
+                        },
+                        "party_size": {
+                            "type": "integer",
+                            "description": "Party size from the conflict result"
+                        }
+                    },
+                    "required": ["choice", "config_id", "date", "party_size"]
+                }
+            },
+            {
                 "name": "view_my_reservations",
                 "description": "View the user's upcoming reservations on Resy. Use this when the user asks about their current bookings.",
                 "input_schema": {
                     "type": "object",
                     "properties": {},
                     "required": []
+                }
+            },
+            {
+                "name": "schedule_sniper",
+                "description": "Schedule a reservation sniper to automatically book a table when availability drops. The sniper will rapid-poll at the specified drop time and grab the first matching slot.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "venue_slug": {
+                            "type": "string",
+                            "description": "Restaurant slug from Resy URL (e.g., 'fish-cheeks', 'temple-court')"
+                        },
+                        "date": {
+                            "type": "string",
+                            "description": "Reservation date in YYYY-MM-DD format"
+                        },
+                        "preferred_time": {
+                            "type": "string",
+                            "description": "Preferred time slot (e.g., '7:00 PM')"
+                        },
+                        "party_size": {
+                            "type": "integer",
+                            "description": "Number of guests (default: 2)"
+                        },
+                        "drop_time": {
+                            "type": "string",
+                            "description": "When availability drops, ISO datetime (e.g., '2026-02-22T09:00:00')"
+                        }
+                    },
+                    "required": ["venue_slug", "date", "preferred_time", "drop_time"]
                 }
             }
         ]
@@ -321,24 +381,10 @@ IMPORTANT BEHAVIORS:
             )
 
             if result.get('success'):
-                # Determine confirmation status
-                has_confirmation = bool(result.get('reservation_id'))
-                status = 'confirmed' if has_confirmation else 'pending_confirmation'
-
-                # Save to database
-                self.store.add_reservation({
-                    'platform': 'resy',
-                    'restaurant_name': result.get('venue_slug', 'Restaurant'),
-                    'date': tool_input["date"],
-                    'time': result.get('time_slot', 'Time TBD'),
-                    'party_size': tool_input["party_size"],
-                    'confirmation_token': result.get('confirmation_token'),
-                    'confirmation_number': result.get('reservation_id'),
-                    'status': status
-                })
+                self._save_reservation(result, tool_input)
 
                 # If status is modal_opened or no confirmation number, flag as unconfirmed
-                if result.get('status') == 'modal_opened' or not has_confirmation:
+                if result.get('status') == 'modal_opened' or not result.get('reservation_id'):
                     result['message'] = 'Booking was submitted but confirmation could not be verified automatically. The user should check their email or Resy app for confirmation.'
 
                 return result
@@ -348,6 +394,33 @@ IMPORTANT BEHAVIORS:
                 if 'Could not confirm' in error_msg:
                     result['message'] = 'The booking may have been submitted but we could not verify confirmation on the page. Advise the user to check their Resy app or email.'
                 return result
+
+        elif tool_name == "resolve_reservation_conflict":
+            # Extract venue_slug and time_text from config_id if available
+            config_id_val = tool_input.get("config_id", "")
+            venue_slug = None
+            time_text = None
+            if config_id_val:
+                try:
+                    parsed = parse_config_id(config_id_val)
+                    venue_slug = parsed['venue_slug']
+                    time_text = parsed['time_text']
+                except ValueError:
+                    pass
+
+            result = self.resy_client.resolve_reservation_conflict(
+                choice=tool_input["choice"],
+                config_id=config_id_val,
+                date=tool_input.get("date"),
+                party_size=tool_input.get("party_size"),
+                venue_slug=venue_slug,
+                time_text=time_text
+            )
+
+            if result.get('success') and result.get('status') != 'kept_existing':
+                self._save_reservation(result, tool_input)
+
+            return result
 
         elif tool_name == "view_my_reservations":
             reservations = self.resy_client.get_reservations()
@@ -365,11 +438,57 @@ IMPORTANT BEHAVIORS:
                     'message': 'No upcoming reservations found'
                 }
 
+        elif tool_name == "schedule_sniper":
+            from utils.reservation_sniper import ReservationSniper
+
+            sniper = ReservationSniper(
+                client=self.resy_client,
+                store=self.store,
+            )
+            job_id = sniper.create_job(
+                venue_slug=tool_input["venue_slug"],
+                date=tool_input["date"],
+                preferred_times=[tool_input["preferred_time"]],
+                party_size=tool_input.get("party_size", Settings.DEFAULT_PARTY_SIZE),
+                scheduled_at=tool_input["drop_time"],
+                auto_resolve_conflicts=True,
+            )
+            return {
+                'success': True,
+                'job_id': job_id,
+                'message': (
+                    f"Sniper job #{job_id} scheduled for {tool_input['venue_slug']} "
+                    f"on {tool_input['date']} at {tool_input['preferred_time']}. "
+                    f"Will start polling at {tool_input['drop_time']}. "
+                    f"Run `python3 scripts/run_sniper.py --cron` to execute when ready."
+                ),
+            }
+
         else:
             return {
                 'success': False,
                 'error': f'Unknown tool: {tool_name}'
             }
+
+    def _save_reservation(self, result: dict, tool_input: dict) -> None:
+        """Save a reservation to the database.
+
+        Args:
+            result: Result dict from resy_client with venue_slug, time_slot, etc.
+            tool_input: Tool input dict with date, party_size, etc.
+        """
+        has_confirmation = bool(result.get('reservation_id'))
+        status = 'confirmed' if has_confirmation else 'pending_confirmation'
+        self.store.add_reservation({
+            'platform': 'resy',
+            'restaurant_name': result.get('venue_slug', 'Restaurant'),
+            'date': tool_input.get('date', ''),
+            'time': result.get('time_slot', 'Time TBD'),
+            'party_size': tool_input.get('party_size', 0),
+            'confirmation_token': result.get('confirmation_token'),
+            'confirmation_number': result.get('reservation_id'),
+            'status': status
+        })
 
     def _format_confirmation_email(self, result, booking_info):
         """Format a confirmation email in markdown."""
