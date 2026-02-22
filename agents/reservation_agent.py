@@ -85,7 +85,9 @@ IMPORTANT BEHAVIORS:
 - If make_resy_reservation returns an unconfirmed status (success but no confirmation number), tell the user the booking was likely submitted and to check their email/Resy app for confirmation. Do NOT say it failed.
 - If make_resy_reservation returns status 'conflict', the user already has a reservation that conflicts with this time slot (possibly at a different restaurant). Present the conflict details (the conflicting restaurant name and message) and ask the user whether they want to cancel the existing reservation and continue with the new booking, or keep the existing reservation. Then call resolve_reservation_conflict with their choice.
 - Answer follow-up questions from conversation context when possible — don't re-call tools for data you already have.
-- When the user wants to snipe or schedule a reservation for a future drop, use the schedule_sniper tool. Ask for the restaurant name (or slug), date, preferred time, and drop time (when availability opens). Use the slug from search results if available, otherwise the agent will convert the name automatically. If the sniper fails because the slug couldn't be resolved, ask the user for the exact slug from the Resy URL."""
+- When the user wants to snipe or schedule a reservation for a future drop, use the schedule_sniper tool. Ask for the restaurant name (or slug), date, preferred time, and drop time (when availability opens). Use the slug from search results if available, otherwise the agent will convert the name automatically. If the sniper fails because the slug couldn't be resolved, ask the user for the exact slug from the Resy URL.
+- Before scheduling, call get_current_time to get the accurate current time for computing drop times.
+- When the user asks about their sniper jobs or scheduled snipes, use the view_sniper_jobs tool."""
 
     def define_tools(self):
         """Define Claude tools for reservation tasks."""
@@ -212,6 +214,24 @@ IMPORTANT BEHAVIORS:
             {
                 "name": "view_my_reservations",
                 "description": "View the user's upcoming reservations on Resy. Use this when the user asks about their current bookings.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "get_current_time",
+                "description": "Get the current date and time in Eastern Time (EST/EDT). Use this before scheduling a sniper job to ensure accurate drop times.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "view_sniper_jobs",
+                "description": "View all scheduled reservation sniper jobs and their statuses. Shows restaurant, requested date/time, drop time, and current status for each job.",
                 "input_schema": {
                     "type": "object",
                     "properties": {},
@@ -441,6 +461,44 @@ IMPORTANT BEHAVIORS:
                     'success': True,
                     'count': 0,
                     'message': 'No upcoming reservations found'
+                }
+
+        elif tool_name == "get_current_time":
+            from zoneinfo import ZoneInfo
+            now_est = datetime.now(ZoneInfo("America/New_York"))
+            return {
+                'success': True,
+                'datetime': now_est.strftime("%Y-%m-%dT%H:%M:%S"),
+                'display': now_est.strftime("%B %d, %Y %I:%M %p %Z"),
+            }
+
+        elif tool_name == "view_sniper_jobs":
+            jobs = self.store.get_all_sniper_jobs()
+            if jobs:
+                formatted = []
+                for j in jobs:
+                    formatted.append({
+                        'job_id': j['id'],
+                        'restaurant': j['venue_slug'],
+                        'date': j['date'],
+                        'preferred_times': j['preferred_times'],
+                        'party_size': j['party_size'],
+                        'status': j['status'],
+                        'scheduled_at': j['scheduled_at'],
+                        'poll_count': j['poll_count'],
+                        'max_attempts': j['max_attempts'],
+                        'notes': j.get('notes'),
+                    })
+                return {
+                    'success': True,
+                    'count': len(formatted),
+                    'jobs': formatted,
+                }
+            else:
+                return {
+                    'success': True,
+                    'count': 0,
+                    'message': 'No sniper jobs found',
                 }
 
         elif tool_name == "schedule_sniper":
