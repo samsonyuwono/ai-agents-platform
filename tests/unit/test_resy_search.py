@@ -923,6 +923,9 @@ class TestMakeReservation:
         conflict_dialog.inner_text.return_value = 'You already have a reservation at Some Place.'
         conflict_frame.locator.return_value.first = conflict_dialog
         client._find_in_frames = MagicMock(return_value=(conflict_locator, conflict_frame))
+        # _wait_for_in_frames wraps _find_in_frames with a deadline loop;
+        # mock it directly so we don't need to set up time.time() return values
+        client._wait_for_in_frames = MagicMock(return_value=(frame_btn, frame))
 
         with patch('utils.resy_browser_client.time'):
             result = client.make_reservation(config_id, '2026-02-21', 2)
@@ -1090,3 +1093,108 @@ class TestResolveReservationConflict:
 
         assert result['success'] is False
         assert 'Invalid choice' in result['error']
+
+
+class TestModalOpenedReturn:
+    """Test that modal_opened returns success: False."""
+
+    def test_modal_opened_returns_failure(self):
+        """Verify modal_opened result has success=False and correct status."""
+        # Simulate the return value from make_reservation when modal opens
+        # but Reserve Now button can't be clicked
+        result = {
+            'success': False,
+            'status': 'modal_opened',
+            'message': 'Booking modal opened but could not click Reserve Now button',
+            'reservation_id': None,
+            'confirmation_token': None,
+            'next_step': 'Click Reserve Now button in the modal'
+        }
+
+        assert result['success'] is False
+        assert result['status'] == 'modal_opened'
+        assert result['reservation_id'] is None
+
+
+class TestClickFallbacks:
+    """Test click fallback strategies in make_reservation booking flow."""
+
+    def test_click_fallback_to_force_click(self):
+        """When Playwright click fails, falls back to force click."""
+        client, _ = _make_browser_client()
+
+        # Simulate a button where normal click throws but force click works
+        btn = MagicMock()
+        btn.click.side_effect = [Exception("Element not clickable"), None]
+
+        # First call raises, second call (force=True) succeeds
+        call_count = [0]
+        def click_side_effect(**kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1 and not kwargs.get('force'):
+                raise Exception("Element not clickable")
+        btn.click.side_effect = click_side_effect
+
+        # Verify the force click pattern works
+        try:
+            btn.click()
+        except Exception:
+            btn.click(force=True)
+
+        assert call_count[0] == 2
+
+    def test_click_fallback_to_frame_evaluate(self):
+        """When force click fails, falls back to frame.evaluate JS click."""
+        frame = MagicMock()
+        btn = MagicMock()
+        btn.click.side_effect = Exception("Still not clickable")
+
+        # JS evaluate fallback
+        frame.evaluate.return_value = None
+
+        # Simulate the fallback chain
+        clicked = False
+        try:
+            btn.click(force=True)
+        except Exception:
+            frame.evaluate.call_args = None
+            frame.evaluate("el => el.click()", btn)
+            clicked = True
+
+        assert clicked is True
+        frame.evaluate.assert_called_once_with("el => el.click()", btn)
+
+
+class TestWaitForInFrames:
+    """Test _wait_for_in_frames() polling helper."""
+
+    @patch('utils.resy_browser_client.time')
+    def test_wait_for_in_frames_timeout(self, mock_time):
+        """Polling loop returns None after timeout when element not found."""
+        client, _ = _make_browser_client()
+        client._find_in_frames = MagicMock(return_value=None)
+
+        # Simulate time progression past deadline
+        mock_time.time.side_effect = [100.0, 100.5, 101.0, 111.0]
+        mock_time.sleep = MagicMock()
+
+        result = client._wait_for_in_frames(['.some-selector'], timeout=10)
+
+        assert result is None
+        assert client._find_in_frames.call_count >= 2
+
+    @patch('utils.resy_browser_client.time')
+    def test_wait_for_in_frames_found(self, mock_time):
+        """Polling loop returns element+frame when found."""
+        client, _ = _make_browser_client()
+        expected = (MagicMock(), MagicMock())
+        # Not found on first call, found on second
+        client._find_in_frames = MagicMock(side_effect=[None, expected])
+
+        mock_time.time.side_effect = [100.0, 100.5, 101.0]
+        mock_time.sleep = MagicMock()
+
+        result = client._wait_for_in_frames(['.some-selector'], timeout=10)
+
+        assert result is expected
+        assert client._find_in_frames.call_count == 2

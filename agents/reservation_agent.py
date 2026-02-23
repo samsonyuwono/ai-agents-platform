@@ -408,15 +408,15 @@ IMPORTANT BEHAVIORS:
             if result.get('success'):
                 self._save_reservation(result, tool_input)
 
-                # If status is modal_opened or no confirmation number, flag as unconfirmed
-                if result.get('status') == 'modal_opened' or not result.get('reservation_id'):
+                # If no confirmation number, flag as unconfirmed
+                if not result.get('reservation_id'):
                     result['message'] = 'Booking was submitted but confirmation could not be verified automatically. The user should check their email or Resy app for confirmation.'
 
                 return result
             else:
-                # Check if error suggests the booking might have gone through
-                error_msg = result.get('error', '')
-                if 'Could not confirm' in error_msg:
+                if result.get('status') == 'modal_opened':
+                    result['message'] = 'Booking modal opened but Reserve Now button could not be clicked. The sniper will retry automatically.'
+                elif 'Could not confirm' in result.get('error', ''):
                     result['message'] = 'The booking may have been submitted but we could not verify confirmation on the page. Advise the user to check their Resy app or email.'
                 return result
 

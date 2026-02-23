@@ -413,3 +413,26 @@ class TestReservationSniper:
         # Verify fallback used job's venue_slug
         call_kwargs = mock_client.resolve_reservation_conflict.call_args[1]
         assert call_kwargs['venue_slug'] == 'test-venue'
+
+    @patch('utils.reservation_sniper.time.sleep')
+    def test_poll_once_retries_on_modal_opened(self, mock_sleep, sniper, store, mock_client):
+        """Sniper treats modal_opened as failure and continues polling."""
+        mock_client.get_availability.return_value = [
+            {'time': '7:00 PM', 'config_id': 'test|||2026-03-01|||7:00 PM'},
+        ]
+        # modal_opened returns success: False, so sniper should treat as failure
+        mock_client.make_reservation.return_value = {
+            'success': False,
+            'status': 'modal_opened',
+            'message': 'Booking modal opened but could not click Reserve Now button',
+        }
+
+        job_id = sniper.create_job(
+            venue_slug='test', date='2026-03-01', preferred_times=['7:00 PM'],
+            scheduled_at='2020-01-01T00:00:00',
+        )
+        job = store.get_sniper_job(job_id)
+        result = sniper._poll_once(job)
+
+        # modal_opened is not success and not conflict, so returns booked=False
+        assert result['booked'] is False
