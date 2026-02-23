@@ -924,36 +924,45 @@ class ResyBrowserClient:
             url = f"https://resy.com/cities/{full_location}/venues/{url_slug}?date={date}&seats={party_size}"
             print(f"    Navigating to: {url}")
 
-            self.page.goto(url, wait_until='load', timeout=30000)
+            try:
+                self.page.goto(url, wait_until='load', timeout=30000)
+            except PlaywrightTimeoutError:
+                print(f"    ⚠️  Page load timeout (30s) — waiting for slots anyway...")
+
+            # JavaScript snippet to detect time slot buttons on the page
+            _SLOT_DETECT_JS = """() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const timeButtons = buttons.filter(btn => {
+                    const text = btn.innerText;
+                    return (text.includes(' AM') || text.includes(' PM')) &&
+                           (text.toLowerCase().includes('dining') ||
+                            text.toLowerCase().includes('bar') ||
+                            text.toLowerCase().includes('patio') ||
+                            text.split('\\n').length >= 2);
+                });
+                if (timeButtons.length >= 1) return true;
+                // Also check for DayOfEventCard "Book Now" buttons
+                const eventCards = document.querySelectorAll('[class*="DayOfEventCard--book-button"]');
+                if (eventCards.length >= 1) return true;
+                return false;
+            }"""
 
             # Wait for availability calendar to fully load
             print(f"    Waiting for availability calendar to load...")
             try:
-                # Wait for multiple time slot buttons to appear (not just navigation buttons)
-                self.page.wait_for_function(
-                    """() => {
-                        const buttons = Array.from(document.querySelectorAll('button'));
-                        const timeButtons = buttons.filter(btn => {
-                            const text = btn.innerText;
-                            return (text.includes(' AM') || text.includes(' PM')) &&
-                                   (text.toLowerCase().includes('dining') ||
-                                    text.toLowerCase().includes('bar') ||
-                                    text.toLowerCase().includes('patio') ||
-                                    text.split('\\n').length >= 2);
-                        });
-                        if (timeButtons.length >= 1) return true;
-                        // Also check for DayOfEventCard "Book Now" buttons
-                        const eventCards = document.querySelectorAll('[class*="DayOfEventCard--book-button"]');
-                        if (eventCards.length >= 1) return true;
-                        return false;
-                    }""",
-                    timeout=10000
-                )
+                self.page.wait_for_function(_SLOT_DETECT_JS, timeout=10000)
                 time.sleep(0.5)  # Additional buffer
                 print(f"    ✓ Calendar loaded")
-            except Exception as e:
-                print(f"    ⚠️  Timeout waiting for calendar: {e}")
-                # Continue anyway
+            except Exception:
+                # First wait failed — give slow pages a second chance
+                print(f"    ⚠️  Slots not found yet, waiting longer...")
+                try:
+                    self.page.wait_for_function(_SLOT_DETECT_JS, timeout=20000)
+                    time.sleep(0.5)
+                    print(f"    ✓ Calendar loaded (after extended wait)")
+                except Exception as e:
+                    print(f"    ⚠️  Timeout waiting for calendar: {e}")
+                    # Continue anyway — will try to find slots below
 
             # Look for time slot buttons in the booking section
             # These are typically blue buttons with time + "Dining Room" text
@@ -1150,36 +1159,44 @@ class ResyBrowserClient:
                 print(f"     ✓ Already on {venue_slug} with correct date/seats")
             else:
                 print(f"     Navigating to: {venue_slug} on {date}")
-                self.page.goto(url, wait_until='load', timeout=30000)
+                try:
+                    self.page.goto(url, wait_until='load', timeout=30000)
+                except PlaywrightTimeoutError:
+                    print(f"     ⚠️  Page load timeout (30s) — waiting for slots anyway...")
+
+            # JavaScript snippet to detect time slot buttons on the page
+            _SLOT_DETECT_JS = """() => {
+                const buttons = Array.from(document.querySelectorAll('button'));
+                const timeButtons = buttons.filter(btn => {
+                    const text = btn.innerText;
+                    return (text.includes(' AM') || text.includes(' PM')) &&
+                           (text.toLowerCase().includes('dining') ||
+                            text.toLowerCase().includes('bar') ||
+                            text.toLowerCase().includes('patio') ||
+                            text.split('\\n').length >= 2);
+                });
+                if (timeButtons.length >= 1) return true;
+                // Also check for DayOfEventCard "Book Now" buttons
+                const eventCards = document.querySelectorAll('[class*="DayOfEventCard--book-button"]');
+                if (eventCards.length >= 1) return true;
+                return false;
+            }"""
 
             # Wait for availability calendar if we just navigated
             if needs_navigation:
                 print(f"     Waiting for availability calendar to load...")
                 try:
-                    # Wait for time slot buttons to appear
-                    self.page.wait_for_function(
-                        """() => {
-                            const buttons = Array.from(document.querySelectorAll('button'));
-                            const timeButtons = buttons.filter(btn => {
-                                const text = btn.innerText;
-                                return (text.includes(' AM') || text.includes(' PM')) &&
-                                       (text.toLowerCase().includes('dining') ||
-                                        text.toLowerCase().includes('bar') ||
-                                        text.toLowerCase().includes('patio') ||
-                                        text.split('\\n').length >= 2);
-                            });
-                            if (timeButtons.length >= 1) return true;
-                            // Also check for DayOfEventCard "Book Now" buttons
-                            const eventCards = document.querySelectorAll('[class*="DayOfEventCard--book-button"]');
-                            if (eventCards.length >= 1) return true;
-                            return false;
-                        }""",
-                        timeout=10000
-                    )
+                    self.page.wait_for_function(_SLOT_DETECT_JS, timeout=10000)
                     time.sleep(0.5)
                     print(f"     ✓ Availability calendar loaded")
-                except Exception as e:
-                    print(f"     ⚠️  Timeout waiting for availability: {e}")
+                except Exception:
+                    print(f"     ⚠️  Slots not found yet, waiting longer...")
+                    try:
+                        self.page.wait_for_function(_SLOT_DETECT_JS, timeout=20000)
+                        time.sleep(0.5)
+                        print(f"     ✓ Availability calendar loaded (after extended wait)")
+                    except Exception as e:
+                        print(f"     ⚠️  Timeout waiting for availability: {e}")
             else:
                 # Already on page, calendar should be loaded
                 print(f"     Calendar should already be loaded from previous check")
