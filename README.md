@@ -140,12 +140,17 @@ Automated restaurant booking agent for Resy using browser automation.
 - Session persistence (cached login)
 - Rate limiting to protect account
 - Automatic confirmation detection
+- Residential proxy support (bypasses bot detection on data center IPs)
 
 **Usage:**
 
 ```bash
 python3 scripts/run_reservation_agent.py
-# Then use natural language: "Book Temple Court on Feb 18 at 6pm for 2"
+# Then use natural language:
+#   "Book Temple Court on Feb 18 at 6pm for 2"
+#   "Search for availability at L'Artusi this Saturday"
+#   "Snipe Fish Cheeks on March 5 at 7pm, drop time is tomorrow at 9am"
+#   "Show me my sniper jobs"
 ```
 
 **Performance:**
@@ -265,6 +270,9 @@ api_key = Settings.ANTHROPIC_API_KEY
 | `RESY_BROWSER_EMAIL` | ❌ | Resy login email (browser mode) |
 | `RESY_BROWSER_PASSWORD` | ❌ | Resy login password (browser mode) |
 | `RESY_CLIENT_MODE` | ❌ | Client mode: `api`, `browser`, or `auto` |
+| `RESY_PROXY_SERVER` | ❌ | Residential proxy server (e.g., `http://gate.decodo.com:10001`) |
+| `RESY_PROXY_USERNAME` | ❌ | Proxy username |
+| `RESY_PROXY_PASSWORD` | ❌ | Proxy password |
 
 ## 🆕 Creating a New Agent
 
