@@ -110,7 +110,7 @@ class ResyBrowserClient:
         self.context = self.browser.new_context(
             proxy=proxy,
             user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            viewport={'width': 1280, 'height': 720},
+            viewport={'width': 1280, 'height': 1200},
             locale='en-US',
             timezone_id='America/New_York',
             # Additional stealth settings
@@ -1329,10 +1329,35 @@ class ResyBrowserClient:
             except Exception as e:
                 print(f"     Debug button listing failed: {e}")
 
-            # Check iframes FIRST (button is always in iframe #5)
-            print(f"     Looking for Reserve Now button in iframes...")
+            # Wait for booking iframe content to load before searching
+            print(f"     Waiting for booking iframe to load...")
             continue_button = None
             booking_button_selector = '[data-test-id="order_summary_page-button-book"]'
+
+            import time as _time
+            iframe_deadline = _time.time() + 10
+            iframe_found = False
+            while _time.time() < iframe_deadline:
+                for frame in self.page.frames:
+                    try:
+                        if frame.locator(booking_button_selector).count() > 0:
+                            iframe_found = True
+                            break
+                    except:
+                        continue
+                if iframe_found:
+                    break
+                _time.sleep(0.5)
+
+            if iframe_found:
+                print(f"     ✓ Booking iframe loaded")
+                time.sleep(0.5)
+            else:
+                print(f"     ⚠️  Booking iframe not loaded after 10s, proceeding anyway...")
+
+            # Check iframes FIRST (button is always in iframe #5)
+            print(f"     Looking for Reserve Now button in iframes...")
+            booking_frame = None  # Track which frame has the button
 
             try:
                 frames = self.page.frames
@@ -1358,6 +1383,7 @@ class ResyBrowserClient:
 
                             if elem.is_visible() and not elem.is_disabled():
                                 continue_button = elem
+                                booking_frame = frame
                                 print(f"       ✓ Found Reserve Now button in iframe {i}")
                                 break
                     except:
@@ -1460,11 +1486,11 @@ class ResyBrowserClient:
 
                     self._screenshot('booking_modal_success')
 
-                    # Return partial success
+                    # Return failure — modal opened but reservation not completed
                     return {
-                        'success': True,
+                        'success': False,
                         'status': 'modal_opened',
-                        'message': 'Booking modal opened successfully - ready for manual completion',
+                        'message': 'Booking modal opened but could not click Reserve Now button',
                         'reservation_id': None,
                         'confirmation_token': None,
                         'next_step': 'Click Reserve Now button in the modal'
@@ -1479,25 +1505,57 @@ class ResyBrowserClient:
                     if continue_button == "javascript_clicked":
                         print(f"       ✓ Already clicked via JavaScript")
                     else:
-                        # Try JavaScript click first (bypasses viewport issues)
+                        click_succeeded = False
+
+                        # Re-scroll iframe before clicking (scroll may have reset)
+                        if booking_frame:
+                            try:
+                                booking_frame.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                                time.sleep(0.3)
+                                continue_button.scroll_into_view_if_needed(timeout=3000)
+                                time.sleep(0.3)
+                            except:
+                                pass
+
+                        # Try 1: Playwright native click (simulates real mouse events)
                         try:
-                            continue_button.evaluate('element => element.click()')
-                            print(f"       ✓ Button clicked via JavaScript")
-                        except Exception as js_error:
-                            # Fallback to normal click
-                            print(f"       JavaScript click failed, trying normal click...")
                             continue_button.click(timeout=5000)
-                            print(f"       ✓ Button clicked successfully")
+                            print(f"       ✓ Button clicked via Playwright")
+                            click_succeeded = True
+                        except Exception as pw_error:
+                            print(f"       Playwright click failed: {str(pw_error)[:100]}")
+
+                        # Try 2: Force click (bypasses visibility/viewport checks)
+                        if not click_succeeded:
+                            try:
+                                print(f"       Trying force click...")
+                                continue_button.click(force=True, timeout=5000)
+                                print(f"       ✓ Force click successful")
+                                click_succeeded = True
+                            except Exception as fc_error:
+                                print(f"       Force click failed: {str(fc_error)[:100]}")
+
+                        # Try 3: Click via frame.evaluate with querySelector
+                        if not click_succeeded and booking_frame:
+                            try:
+                                print(f"       Trying frame.evaluate querySelector click...")
+                                booking_frame.evaluate(f"""() => {{
+                                    const btn = document.querySelector('{booking_button_selector}');
+                                    if (btn) {{
+                                        btn.scrollIntoView({{behavior: 'instant', block: 'center'}});
+                                        btn.click();
+                                    }}
+                                }}""")
+                                print(f"       ✓ Button clicked via frame querySelector")
+                                click_succeeded = True
+                            except Exception as fq_error:
+                                print(f"       frame querySelector click failed: {str(fq_error)[:100]}")
+
+                        if not click_succeeded:
+                            raise Exception("All click methods failed for Reserve Now button")
                 except Exception as e:
-                    # Last resort: force click
-                    print(f"       ⚠️  Click failed: {str(e)[:100]}")
-                    print(f"       Trying force click...")
-                    try:
-                        continue_button.click(force=True)
-                        print(f"       ✓ Force click successful")
-                    except Exception as e2:
-                        print(f"       ✗ All click methods failed: {str(e2)[:100]}")
-                        raise e2
+                    print(f"       ✗ Reserve Now click failed: {str(e)[:100]}")
+                    raise e
 
                 time.sleep(2)  # Wait for Resy to process booking before checking confirmation
 
