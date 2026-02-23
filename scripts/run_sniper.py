@@ -30,6 +30,8 @@ import sys
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from pathlib import Path
+from config.settings import Settings
 from utils.reservation_sniper import ReservationSniper
 from utils.reservation_store import ReservationStore
 
@@ -44,8 +46,18 @@ def setup_logging(verbose: bool = False):
     )
 
 
+def _clear_cookies_for_proxy():
+    """Clear cached Resy cookies when proxy is configured so the session routes through the proxy."""
+    if Settings.has_proxy_configured():
+        cookie_file = Path.home() / '.resy_session_cookies.json'
+        if cookie_file.exists():
+            cookie_file.unlink()
+            print("🍪 Cleared cached cookies (proxy is configured)")
+
+
 def cmd_create_and_run(args):
     """Create a sniper job and optionally run it immediately."""
+    _clear_cookies_for_proxy()
     with ReservationSniper() as sniper:
         preferred_times = args.times if args.times else []
 
@@ -76,6 +88,7 @@ def cmd_create_and_run(args):
 
 def cmd_cron(args):
     """Process all due scheduled jobs."""
+    _clear_cookies_for_proxy()
     with ReservationSniper() as sniper:
         result = sniper.run_scheduled_jobs()
 

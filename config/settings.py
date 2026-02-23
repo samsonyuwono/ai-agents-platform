@@ -40,6 +40,11 @@ class Settings:
     RESY_RATE_LIMIT_JITTER_MAX = float(os.environ.get("RESY_RATE_LIMIT_JITTER_MAX", "1.5"))
     RESY_BROWSER_TIMEOUT_MS = int(os.environ.get("RESY_BROWSER_TIMEOUT_MS", "30000"))
 
+    # Residential proxy (optional — routes browser traffic through residential IP)
+    RESY_PROXY_SERVER = os.environ.get("RESY_PROXY_SERVER")  # e.g., "http://brd.superproxy.io:22225"
+    RESY_PROXY_USERNAME = os.environ.get("RESY_PROXY_USERNAME")
+    RESY_PROXY_PASSWORD = os.environ.get("RESY_PROXY_PASSWORD")
+
     # OpenTable Configuration
     OPENTABLE_EMAIL = os.environ.get("OPENTABLE_EMAIL")
     OPENTABLE_PASSWORD = os.environ.get("OPENTABLE_PASSWORD")
@@ -94,6 +99,11 @@ class Settings:
     def has_opentable_configured(cls):
         """Check if OpenTable credentials are configured."""
         return bool(cls.OPENTABLE_EMAIL and cls.OPENTABLE_PASSWORD)
+
+    @classmethod
+    def has_proxy_configured(cls) -> bool:
+        """Check if residential proxy is configured."""
+        return bool(cls.RESY_PROXY_SERVER)
 
     @classmethod
     def has_resy_browser_configured(cls):

@@ -97,8 +97,18 @@ class ResyBrowserClient:
             ]
         )
 
+        # Build proxy config if available
+        proxy = None
+        if Settings.has_proxy_configured():
+            proxy = {"server": Settings.RESY_PROXY_SERVER}
+            if Settings.RESY_PROXY_USERNAME:
+                proxy["username"] = Settings.RESY_PROXY_USERNAME
+                proxy["password"] = Settings.RESY_PROXY_PASSWORD
+            print(f"  🌐 Using proxy: {Settings.RESY_PROXY_SERVER}")
+
         # Create context with realistic settings
         self.context = self.browser.new_context(
+            proxy=proxy,
             user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             viewport={'width': 1280, 'height': 720},
             locale='en-US',
