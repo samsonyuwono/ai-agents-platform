@@ -15,6 +15,12 @@ from config.settings import Settings
 from utils.slug_utils import normalize_slug, parse_config_id, make_config_id
 from utils.selectors import ResySelectors, SelectorHelper
 
+try:
+    from playwright_stealth import Stealth
+    _HAS_STEALTH = True
+except ImportError:
+    _HAS_STEALTH = False
+
 logger = logging.getLogger(__name__)
 
 # Location code mappings - short codes to full Resy location names
@@ -155,14 +161,26 @@ class ResyBrowserClient:
             }
         )
 
+        # Apply playwright-stealth evasions (WebGL, canvas, fonts, webdriver, etc.)
+        if _HAS_STEALTH:
+            stealth = Stealth(
+                navigator_languages_override=("en-US", "en"),
+                navigator_platform_override="MacIntel",
+            )
+            stealth.apply_stealth_sync(self.context)
+            print("  ✓ Applied playwright-stealth evasions")
+        else:
+            logger.warning("playwright-stealth not installed — using basic stealth only")
+
         self.page = self.context.new_page()
 
-        # Hide webdriver property
-        self.page.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-        """)
+        # Fallback webdriver hiding if playwright-stealth is not available
+        if not _HAS_STEALTH:
+            self.page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined
+                });
+            """)
 
         print("  ✓ Browser launched")
 
