@@ -1,0 +1,18 @@
+[Unit]
+Description=Reservation Sniper Worker
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/ai-agents
+EnvironmentFile=/root/ai-agents/.env
+ExecStart=/usr/bin/python3 /root/ai-agents/scripts/sniper_worker.py
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

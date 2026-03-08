@@ -27,6 +27,8 @@ This agent can:
   • Make reservations automatically
   • View your upcoming reservations
   • Send email confirmations
+  • Snipe reservations at drop time
+  • View scheduled sniper jobs
 """)
 
     try:

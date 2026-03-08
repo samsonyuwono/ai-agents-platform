@@ -4,6 +4,7 @@ Uses Playwright to interact with Resy website when API is unreliable.
 """
 
 import logging
+import re
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page, TimeoutError as PlaywrightTimeoutError
 import time
 import random
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 from config.settings import Settings
 from utils.slug_utils import normalize_slug, parse_config_id, make_config_id
-from utils.selectors import SelectorHelper
+from utils.selectors import ResySelectors, SelectorHelper
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,24 @@ class ResyBrowserClient:
         'button[aria-label*="user" i]',
         'a[href*="/user"]',
     ]
+
+    # JavaScript snippet to detect time slot buttons on the page
+    _SLOT_DETECT_JS = """() => {
+        const buttons = Array.from(document.querySelectorAll('button'));
+        const timeButtons = buttons.filter(btn => {
+            const text = btn.innerText;
+            return (text.includes(' AM') || text.includes(' PM')) &&
+                   (text.toLowerCase().includes('dining') ||
+                    text.toLowerCase().includes('bar') ||
+                    text.toLowerCase().includes('patio') ||
+                    text.split('\\n').length >= 2);
+        });
+        if (timeButtons.length >= 1) return true;
+        // Also check for DayOfEventCard "Book Now" buttons
+        const eventCards = document.querySelectorAll('[class*="DayOfEventCard--book-button"]');
+        if (eventCards.length >= 1) return true;
+        return false;
+    }"""
 
     # Full auth validation selectors (extends quick with more indicators)
     AUTH_INDICATORS_FULL = AUTH_INDICATORS_QUICK + [
@@ -77,8 +96,20 @@ class ResyBrowserClient:
         self.page = None
         self.is_authenticated = False
 
-        # Cookie storage for session persistence
+        # Session storage for persistence (cookies + localStorage)
         self.cookie_file = Path.home() / '.resy_session_cookies.json'
+        self.storage_state_file = Path.home() / '.resy_storage_state.json'
+
+    def _get_storage_state_path(self) -> Optional[str]:
+        """Return storage state file path if it exists and contains valid JSON, else None."""
+        if not self.storage_state_file.exists():
+            return None
+        try:
+            with open(self.storage_state_file, 'r') as f:
+                json.load(f)
+            return str(self.storage_state_file)
+        except (json.JSONDecodeError, OSError):
+            return None
 
     def _launch_browser(self):
         """Launch Playwright browser and create page."""
@@ -96,10 +127,26 @@ class ResyBrowserClient:
             ]
         )
 
+        # Build proxy config if available
+        proxy = None
+        if Settings.has_proxy_configured():
+            proxy = {"server": Settings.RESY_PROXY_SERVER}
+            if Settings.RESY_PROXY_USERNAME:
+                proxy["username"] = Settings.RESY_PROXY_USERNAME
+                proxy["password"] = Settings.RESY_PROXY_PASSWORD
+            print(f"  🌐 Using proxy: {Settings.RESY_PROXY_SERVER}")
+
+        # Load storage state (cookies + localStorage) if available
+        storage_state_path = self._get_storage_state_path()
+        if storage_state_path:
+            print(f"  ✓ Loaded storage state from {self.storage_state_file.name}")
+
         # Create context with realistic settings
         self.context = self.browser.new_context(
+            storage_state=storage_state_path,
+            proxy=proxy,
             user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            viewport={'width': 1280, 'height': 720},
+            viewport={'width': 1280, 'height': 1200},
             locale='en-US',
             timezone_id='America/New_York',
             # Additional stealth settings
@@ -208,16 +255,21 @@ class ResyBrowserClient:
             except:
                 pass  # Ignore if mouse movement fails
 
-    def _save_cookies(self):
-        """Save browser cookies to file for session persistence."""
+    def _save_session(self):
+        """Save full browser state (cookies + localStorage) for session persistence."""
         if self.context:
+            try:
+                self.context.storage_state(path=str(self.storage_state_file))
+                print(f"     ✓ Saved storage state")
+            except Exception as e:
+                print(f"     ⚠️  Failed to save storage state: {e}")
+            # Also write legacy cookie file as fallback
             try:
                 cookies = self.context.cookies()
                 with open(self.cookie_file, 'w') as f:
                     json.dump(cookies, f)
-                print(f"     ✓ Saved session cookies")
-            except Exception as e:
-                print(f"     ⚠️  Failed to save cookies: {e}")
+            except Exception:
+                pass
 
     def _load_cookies(self):
         """Load browser cookies from file."""
@@ -272,6 +324,24 @@ class ResyBrowserClient:
                         return (candidate, frame)
                 except:
                     continue
+        return None
+
+    def _wait_for_in_frames(self, selectors: List[str], timeout: float = 10) -> Optional[tuple]:
+        """Poll _find_in_frames until an element is found or timeout expires.
+
+        Args:
+            selectors: List of CSS selectors to try
+            timeout: Maximum seconds to wait
+
+        Returns:
+            Tuple of (locator, frame) or None if not found within timeout
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            result = self._find_in_frames(selectors)
+            if result is not None:
+                return result
+            time.sleep(0.5)
         return None
 
     def _is_session_valid(self) -> bool:
@@ -332,21 +402,26 @@ class ResyBrowserClient:
         if not self.page:
             self._launch_browser()
 
-        # Try loading saved cookies first
+        # Storage state was already loaded during _launch_browser() via new_context()
+        if self._get_storage_state_path():
+            print("     ✓ Storage state loaded, assuming authenticated")
+            print("     → (Will validate lazily if needed)")
+            self.is_authenticated = True
+            return
+
+        # Fall back to legacy cookie loading
         if self._load_cookies():
-            # Optimistic authentication: assume cookies are valid
-            # If they're not, we'll get an auth error and can handle it then
             print("     ✓ Loaded session cookies, assuming authenticated")
             print("     → (Will validate lazily if needed)")
             self.is_authenticated = True
             return
 
-        # No cookies - perform fresh login
+        # No session - perform fresh login
         self._login()
 
-        # Save cookies for next time
+        # Save session for next time
         if self.is_authenticated:
-            self._save_cookies()
+            self._save_session()
 
     def _login(self):
         """
@@ -710,7 +785,6 @@ class ResyBrowserClient:
                         if rating_elem.count() > 0:
                             rating_text = rating_elem.inner_text().strip()
                             # Parse "4.8 (123)" or just "4.8"
-                            import re
                             rating_match = re.search(r'(\d+\.?\d*)', rating_text)
                             if rating_match:
                                 rating = float(rating_match.group(1))
@@ -734,7 +808,6 @@ class ResyBrowserClient:
                         if price_elem.count() > 0:
                             price_text = price_elem.inner_text().strip()
                             # Look for $ symbols
-                            import re
                             price_match = re.search(r'(\$+)', price_text)
                             if price_match:
                                 price_range = price_match.group(1)
@@ -923,32 +996,27 @@ class ResyBrowserClient:
             url = f"https://resy.com/cities/{full_location}/venues/{url_slug}?date={date}&seats={party_size}"
             print(f"    Navigating to: {url}")
 
-            self.page.goto(url, wait_until='load', timeout=30000)
+            try:
+                self.page.goto(url, wait_until='load', timeout=30000)
+            except PlaywrightTimeoutError:
+                print(f"    ⚠️  Page load timeout (30s) — waiting for slots anyway...")
 
             # Wait for availability calendar to fully load
             print(f"    Waiting for availability calendar to load...")
             try:
-                # Wait for multiple time slot buttons to appear (not just navigation buttons)
-                self.page.wait_for_function(
-                    """() => {
-                        const buttons = Array.from(document.querySelectorAll('button'));
-                        const timeButtons = buttons.filter(btn => {
-                            const text = btn.innerText;
-                            return (text.includes(' AM') || text.includes(' PM')) &&
-                                   (text.toLowerCase().includes('dining') ||
-                                    text.toLowerCase().includes('bar') ||
-                                    text.toLowerCase().includes('patio') ||
-                                    text.split('\\n').length >= 2);
-                        });
-                        return timeButtons.length >= 1;
-                    }""",
-                    timeout=10000
-                )
+                self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=10000)
                 time.sleep(0.5)  # Additional buffer
                 print(f"    ✓ Calendar loaded")
-            except Exception as e:
-                print(f"    ⚠️  Timeout waiting for calendar: {e}")
-                # Continue anyway
+            except Exception:
+                # First wait failed — give slow pages a second chance
+                print(f"    ⚠️  Slots not found yet, waiting longer...")
+                try:
+                    self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=20000)
+                    time.sleep(0.5)
+                    print(f"    ✓ Calendar loaded (after extended wait)")
+                except Exception as e:
+                    print(f"    ⚠️  Timeout waiting for calendar: {e}")
+                    # Continue anyway — will try to find slots below
 
             # Look for time slot buttons in the booking section
             # These are typically blue buttons with time + "Dining Room" text
@@ -1016,6 +1084,37 @@ class ResyBrowserClient:
                 except Exception as e:
                     # Skip this button if we can't parse it
                     continue
+
+            # Fallback: check for DayOfEventCard elements (new Resy event UI)
+            if not available_slots:
+                event_cards = self.page.locator(ResySelectors.EVENT_CARD_CONTAINER).all()
+                for card in event_cards:
+                    try:
+                        date_el = card.locator(ResySelectors.EVENT_CARD_DATE)
+                        if date_el.count() == 0:
+                            continue
+                        date_text = date_el.inner_text().strip()  # e.g. "Fri Mar 6 at 5:30 PM"
+                        # Extract time from "... at H:MM PM"
+                        time_match = re.search(r'(\d{1,2}:\d{2}\s*[AP]M)', date_text, re.IGNORECASE)
+                        if not time_match:
+                            continue
+                        actual_time = time_match.group(1)
+
+                        name_el = card.locator(ResySelectors.EVENT_CARD_NAME)
+                        event_name = name_el.inner_text().strip() if name_el.count() > 0 else ''
+
+                        available_slots.append({
+                            'config_id': make_config_id(venue_id, date, actual_time),
+                            'token': None,
+                            'time': actual_time,
+                            'type': 'event',
+                            'table_name': event_name or 'Event',
+                            'venue_name': url_slug,
+                        })
+                    except:
+                        continue
+                if available_slots:
+                    print(f"    ✓ Found {len(available_slots)} event card slots")
 
             if available_slots:
                 print(f"    ✓ Found {len(available_slots)} available slots")
@@ -1114,32 +1213,26 @@ class ResyBrowserClient:
                 print(f"     ✓ Already on {venue_slug} with correct date/seats")
             else:
                 print(f"     Navigating to: {venue_slug} on {date}")
-                self.page.goto(url, wait_until='load', timeout=30000)
+                try:
+                    self.page.goto(url, wait_until='load', timeout=30000)
+                except PlaywrightTimeoutError:
+                    print(f"     ⚠️  Page load timeout (30s) — waiting for slots anyway...")
 
             # Wait for availability calendar if we just navigated
             if needs_navigation:
                 print(f"     Waiting for availability calendar to load...")
                 try:
-                    # Wait for time slot buttons to appear
-                    self.page.wait_for_function(
-                        """() => {
-                            const buttons = Array.from(document.querySelectorAll('button'));
-                            const timeButtons = buttons.filter(btn => {
-                                const text = btn.innerText;
-                                return (text.includes(' AM') || text.includes(' PM')) &&
-                                       (text.toLowerCase().includes('dining') ||
-                                        text.toLowerCase().includes('bar') ||
-                                        text.toLowerCase().includes('patio') ||
-                                        text.split('\\n').length >= 2);
-                            });
-                            return timeButtons.length >= 1;
-                        }""",
-                        timeout=10000
-                    )
+                    self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=10000)
                     time.sleep(0.5)
                     print(f"     ✓ Availability calendar loaded")
-                except Exception as e:
-                    print(f"     ⚠️  Timeout waiting for availability: {e}")
+                except Exception:
+                    print(f"     ⚠️  Slots not found yet, waiting longer...")
+                    try:
+                        self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=20000)
+                        time.sleep(0.5)
+                        print(f"     ✓ Availability calendar loaded (after extended wait)")
+                    except Exception as e:
+                        print(f"     ⚠️  Timeout waiting for availability: {e}")
             else:
                 # Already on page, calendar should be loaded
                 print(f"     Calendar should already be loaded from previous check")
@@ -1168,6 +1261,24 @@ class ResyBrowserClient:
                         continue
             except Exception as e:
                 print(f"     Error searching buttons: {e}")
+
+            # Fallback: check for DayOfEventCard book button (event UI)
+            if not time_button:
+                event_cards = self.page.locator(ResySelectors.EVENT_CARD_CONTAINER).all()
+                for card in event_cards:
+                    try:
+                        date_el = card.locator(ResySelectors.EVENT_CARD_DATE)
+                        if date_el.count() == 0:
+                            continue
+                        date_text = date_el.inner_text().strip()
+                        if time_text in date_text:
+                            book_btn = card.locator(ResySelectors.EVENT_CARD_BOOK_BUTTON)
+                            if book_btn.count() > 0 and not book_btn.first.is_disabled():
+                                time_button = book_btn.first
+                                print(f"     Found event card Book Now for: {date_text}")
+                                break
+                    except:
+                        continue
 
             if not time_button:
                 self._screenshot('no_button')
@@ -1244,10 +1355,21 @@ class ResyBrowserClient:
             except Exception as e:
                 print(f"     Debug button listing failed: {e}")
 
-            # Check iframes FIRST (button is always in iframe #5)
-            print(f"     Looking for Reserve Now button in iframes...")
+            # Wait for booking iframe content to load before searching
+            print(f"     Waiting for booking iframe to load...")
             continue_button = None
             booking_button_selector = '[data-test-id="order_summary_page-button-book"]'
+
+            iframe_result = self._wait_for_in_frames([booking_button_selector], timeout=10)
+            if iframe_result is not None:
+                print(f"     ✓ Booking iframe loaded")
+                time.sleep(0.5)
+            else:
+                print(f"     ⚠️  Booking iframe not loaded after 10s, proceeding anyway...")
+
+            # Check iframes FIRST (button is always in iframe #5)
+            print(f"     Looking for Reserve Now button in iframes...")
+            booking_frame = None  # Track which frame has the button
 
             try:
                 frames = self.page.frames
@@ -1273,6 +1395,7 @@ class ResyBrowserClient:
 
                             if elem.is_visible() and not elem.is_disabled():
                                 continue_button = elem
+                                booking_frame = frame
                                 print(f"       ✓ Found Reserve Now button in iframe {i}")
                                 break
                     except:
@@ -1294,58 +1417,58 @@ class ResyBrowserClient:
                 except:
                     pass
 
-                    # FALLBACK 2: JavaScript click - find ANY element with "Reserve" text
-                    if not continue_button:
-                        print(f"       Using JavaScript to find and click Reserve button...")
-                        try:
-                            # Use JavaScript to find and click the button
-                            clicked = self.page.evaluate("""() => {
-                                // Find all clickable elements
-                                const allElements = document.querySelectorAll('button, a, div[role="button"], span[role="button"]');
+                # FALLBACK 2: JavaScript click - find ANY element with "Reserve" text
+                if not continue_button:
+                    print(f"       Using JavaScript to find and click Reserve button...")
+                    try:
+                        # Use JavaScript to find and click the button
+                        clicked = self.page.evaluate("""() => {
+                            // Find all clickable elements
+                            const allElements = document.querySelectorAll('button, a, div[role="button"], span[role="button"]');
 
-                                for (const elem of allElements) {
-                                    const text = elem.innerText || elem.textContent || '';
+                            for (const elem of allElements) {
+                                const text = elem.innerText || elem.textContent || '';
 
-                                    // Look for Reserve/Book keywords
-                                    if (text.toLowerCase().includes('reserve') ||
-                                        text.toLowerCase().includes('book now') ||
-                                        text.toLowerCase().includes('complete reservation')) {
+                                // Look for Reserve/Book keywords
+                                if (text.toLowerCase().includes('reserve') ||
+                                    text.toLowerCase().includes('book now') ||
+                                    text.toLowerCase().includes('complete reservation')) {
 
-                                        // Check if it has the right data-test-id
-                                        if (elem.getAttribute('data-test-id') === 'order_summary_page-button-book') {
-                                            elem.scrollIntoView({behavior: 'smooth', block: 'center'});
-                                            setTimeout(() => elem.click(), 500);
-                                            return {success: true, text: text.trim(), method: 'data-test-id'};
-                                        }
-                                    }
-                                }
-
-                                // If not found by data-test-id, try by text and button class
-                                for (const elem of allElements) {
-                                    const text = elem.innerText || elem.textContent || '';
-                                    const classes = elem.className || '';
-
-                                    if ((text.toLowerCase().includes('reserve') && classes.includes('Button--primary')) ||
-                                        elem.getAttribute('data-test-id') === 'order_summary_page-button-book') {
+                                    // Check if it has the right data-test-id
+                                    if (elem.getAttribute('data-test-id') === 'order_summary_page-button-book') {
                                         elem.scrollIntoView({behavior: 'smooth', block: 'center'});
                                         setTimeout(() => elem.click(), 500);
-                                        return {success: true, text: text.trim(), method: 'text+class'};
+                                        return {success: true, text: text.trim(), method: 'data-test-id'};
                                     }
                                 }
+                            }
 
-                                return {success: false, message: 'Button not found'};
-                            }""")
+                            // If not found by data-test-id, try by text and button class
+                            for (const elem of allElements) {
+                                const text = elem.innerText || elem.textContent || '';
+                                const classes = elem.className || '';
 
-                            if clicked and clicked.get('success'):
-                                print(f"       ✓ JavaScript click succeeded: '{clicked.get('text')}' via {clicked.get('method')}")
-                                # Give time for click to process
-                                time.sleep(2)
-                                # Mark as found so we don't show error
-                                continue_button = "javascript_clicked"
-                            else:
-                                print(f"       ✗ JavaScript click failed: {clicked.get('message')}")
-                        except Exception as e:
-                            print(f"       ✗ JavaScript approach failed: {e}")
+                                if ((text.toLowerCase().includes('reserve') && classes.includes('Button--primary')) ||
+                                    elem.getAttribute('data-test-id') === 'order_summary_page-button-book') {
+                                    elem.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                    setTimeout(() => elem.click(), 500);
+                                    return {success: true, text: text.trim(), method: 'text+class'};
+                                }
+                            }
+
+                            return {success: false, message: 'Button not found'};
+                        }""")
+
+                        if clicked and clicked.get('success'):
+                            print(f"       ✓ JavaScript click succeeded: '{clicked.get('text')}' via {clicked.get('method')}")
+                            # Give time for click to process
+                            time.sleep(2)
+                            # Mark as found so we don't show error
+                            continue_button = "javascript_clicked"
+                        else:
+                            print(f"       ✗ JavaScript click failed: {clicked.get('message')}")
+                    except Exception as e:
+                        print(f"       ✗ JavaScript approach failed: {e}")
 
             # If still no button found, check modal status and report partial success
             if not continue_button:
@@ -1375,11 +1498,11 @@ class ResyBrowserClient:
 
                     self._screenshot('booking_modal_success')
 
-                    # Return partial success
+                    # Return failure — modal opened but reservation not completed
                     return {
-                        'success': True,
+                        'success': False,
                         'status': 'modal_opened',
-                        'message': 'Booking modal opened successfully - ready for manual completion',
+                        'message': 'Booking modal opened but could not click Reserve Now button',
                         'reservation_id': None,
                         'confirmation_token': None,
                         'next_step': 'Click Reserve Now button in the modal'
@@ -1394,25 +1517,57 @@ class ResyBrowserClient:
                     if continue_button == "javascript_clicked":
                         print(f"       ✓ Already clicked via JavaScript")
                     else:
-                        # Try JavaScript click first (bypasses viewport issues)
+                        click_succeeded = False
+
+                        # Re-scroll iframe before clicking (scroll may have reset)
+                        if booking_frame:
+                            try:
+                                booking_frame.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                                time.sleep(0.3)
+                                continue_button.scroll_into_view_if_needed(timeout=3000)
+                                time.sleep(0.3)
+                            except:
+                                pass
+
+                        # Try 1: Playwright native click (simulates real mouse events)
                         try:
-                            continue_button.evaluate('element => element.click()')
-                            print(f"       ✓ Button clicked via JavaScript")
-                        except Exception as js_error:
-                            # Fallback to normal click
-                            print(f"       JavaScript click failed, trying normal click...")
                             continue_button.click(timeout=5000)
-                            print(f"       ✓ Button clicked successfully")
+                            print(f"       ✓ Button clicked via Playwright")
+                            click_succeeded = True
+                        except Exception as pw_error:
+                            print(f"       Playwright click failed: {str(pw_error)[:100]}")
+
+                        # Try 2: Force click (bypasses visibility/viewport checks)
+                        if not click_succeeded:
+                            try:
+                                print(f"       Trying force click...")
+                                continue_button.click(force=True, timeout=5000)
+                                print(f"       ✓ Force click successful")
+                                click_succeeded = True
+                            except Exception as fc_error:
+                                print(f"       Force click failed: {str(fc_error)[:100]}")
+
+                        # Try 3: Click via frame.evaluate with querySelector
+                        if not click_succeeded and booking_frame:
+                            try:
+                                print(f"       Trying frame.evaluate querySelector click...")
+                                booking_frame.evaluate(f"""() => {{
+                                    const btn = document.querySelector('{booking_button_selector}');
+                                    if (btn) {{
+                                        btn.scrollIntoView({{behavior: 'instant', block: 'center'}});
+                                        btn.click();
+                                    }}
+                                }}""")
+                                print(f"       ✓ Button clicked via frame querySelector")
+                                click_succeeded = True
+                            except Exception as fq_error:
+                                print(f"       frame querySelector click failed: {str(fq_error)[:100]}")
+
+                        if not click_succeeded:
+                            raise Exception("All click methods failed for Reserve Now button")
                 except Exception as e:
-                    # Last resort: force click
-                    print(f"       ⚠️  Click failed: {str(e)[:100]}")
-                    print(f"       Trying force click...")
-                    try:
-                        continue_button.click(force=True)
-                        print(f"       ✓ Force click successful")
-                    except Exception as e2:
-                        print(f"       ✗ All click methods failed: {str(e2)[:100]}")
-                        raise e2
+                    print(f"       ✗ Reserve Now click failed: {str(e)[:100]}")
+                    raise e
 
                 time.sleep(2)  # Wait for Resy to process booking before checking confirmation
 
@@ -1445,7 +1600,6 @@ class ResyBrowserClient:
                     # Parse out the conflicting restaurant name
                     conflicting_restaurant = None
                     try:
-                        import re
                         match = re.search(r'reservation at\s+(.+?)\.', message)
                         if match:
                             conflicting_restaurant = match.group(1).strip()
@@ -1581,7 +1735,6 @@ class ResyBrowserClient:
                     if self.page.locator(pattern).count() > 0:
                         text = self.page.locator(pattern).first.inner_text()
                         # Extract number from text
-                        import re
                         match = re.search(r'#\s*(\w+)', text)
                         if match:
                             confirmation_number = match.group(1)

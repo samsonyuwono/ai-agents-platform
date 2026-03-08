@@ -40,6 +40,11 @@ class Settings:
     RESY_RATE_LIMIT_JITTER_MAX = float(os.environ.get("RESY_RATE_LIMIT_JITTER_MAX", "1.5"))
     RESY_BROWSER_TIMEOUT_MS = int(os.environ.get("RESY_BROWSER_TIMEOUT_MS", "30000"))
 
+    # Residential proxy (optional — routes browser traffic through residential IP)
+    RESY_PROXY_SERVER = os.environ.get("RESY_PROXY_SERVER")  # e.g., "http://brd.superproxy.io:22225"
+    RESY_PROXY_USERNAME = os.environ.get("RESY_PROXY_USERNAME")
+    RESY_PROXY_PASSWORD = os.environ.get("RESY_PROXY_PASSWORD")
+
     # OpenTable Configuration
     OPENTABLE_EMAIL = os.environ.get("OPENTABLE_EMAIL")
     OPENTABLE_PASSWORD = os.environ.get("OPENTABLE_PASSWORD")
@@ -47,6 +52,13 @@ class Settings:
     # Reservation Settings
     DEFAULT_PARTY_SIZE = int(os.environ.get("DEFAULT_PARTY_SIZE", "2"))
     RESERVATION_DB_PATH = os.environ.get("RESERVATION_DB_PATH", "data/reservations.db")
+
+    # Sniper Configuration
+    SNIPER_POLL_INTERVAL_SECONDS = int(os.environ.get("SNIPER_POLL_INTERVAL_SECONDS", "5"))
+    SNIPER_MAX_ATTEMPTS = int(os.environ.get("SNIPER_MAX_ATTEMPTS", "60"))
+    SNIPER_DEFAULT_TIME_WINDOW_MINUTES = int(os.environ.get("SNIPER_DEFAULT_TIME_WINDOW_MINUTES", "60"))
+    SNIPER_REMOTE_HOST = os.environ.get("SNIPER_REMOTE_HOST")  # e.g., "root@159.89.41.103"
+    SNIPER_REMOTE_DIR = os.environ.get("SNIPER_REMOTE_DIR", "/root/ai-agents")
 
     # Model Configuration
     DEFAULT_MODEL = "claude-sonnet-4-20250514"
@@ -80,13 +92,24 @@ class Settings:
 
     @classmethod
     def has_resy_configured(cls):
-        """Check if Resy API is properly configured."""
-        return bool(cls.RESY_API_KEY and cls.RESY_AUTH_TOKEN)
+        """Check if Resy API is properly configured.
+
+        API key is always required. Auth token is optional if email/password
+        are configured (token can be acquired via refresh_auth_token).
+        """
+        if not cls.RESY_API_KEY:
+            return False
+        return bool(cls.RESY_AUTH_TOKEN or (cls.RESY_EMAIL and cls.RESY_PASSWORD))
 
     @classmethod
     def has_opentable_configured(cls):
         """Check if OpenTable credentials are configured."""
         return bool(cls.OPENTABLE_EMAIL and cls.OPENTABLE_PASSWORD)
+
+    @classmethod
+    def has_proxy_configured(cls) -> bool:
+        """Check if residential proxy is configured."""
+        return bool(cls.RESY_PROXY_SERVER)
 
     @classmethod
     def has_resy_browser_configured(cls):

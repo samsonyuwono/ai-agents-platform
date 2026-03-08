@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 from utils.resy_client import ResyClient
 from utils.reservation_store import ReservationStore
 from utils.email_sender import EmailSender
+from utils.slug_utils import parse_config_id, normalize_slug
 from config.settings import Settings
 
 
@@ -41,14 +42,18 @@ class ReservationAgent(BaseAgent):
         else:
             self.email_sender = None
 
-        # System prompt with date parsing guidance
-        today = datetime.now()
-        today_str = today.strftime("%B %d, %Y")
-        current_year = today.year
+        # System prompt with date/time parsing guidance
+        from zoneinfo import ZoneInfo
+        now_est = datetime.now(ZoneInfo("America/New_York"))
+        today_str = now_est.strftime("%B %d, %Y")
+        time_str = now_est.strftime("%I:%M %p %Z")
+        current_year = now_est.year
         self.system_prompt = f"""You are a helpful restaurant reservation assistant.
 
 CRITICAL DATE PARSING RULES:
 - Today's date is {today_str}
+- Current time is {time_str}
+- All times are in Eastern Time (EST/EDT). Always use ET for drop times and scheduling.
 - Current year is {current_year}
 - When parsing dates:
   * If user says "Feb 25" or "February 25" without a year, assume {current_year}
@@ -78,7 +83,11 @@ IMPORTANT BEHAVIORS:
 - If search_resy_restaurants finds nothing, try search_resy_by_cuisine as a fallback before telling the user.
 - If a tool returns an error or no results, explain what happened and suggest alternatives (different date, time, spelling, or cuisine search).
 - If make_resy_reservation returns an unconfirmed status (success but no confirmation number), tell the user the booking was likely submitted and to check their email/Resy app for confirmation. Do NOT say it failed.
-- Answer follow-up questions from conversation context when possible — don't re-call tools for data you already have."""
+- If make_resy_reservation returns status 'conflict', the user already has a reservation that conflicts with this time slot (possibly at a different restaurant). Present the conflict details (the conflicting restaurant name and message) and ask the user whether they want to cancel the existing reservation and continue with the new booking, or keep the existing reservation. Then call resolve_reservation_conflict with their choice.
+- Answer follow-up questions from conversation context when possible — don't re-call tools for data you already have.
+- When the user wants to snipe or schedule a reservation for a future drop, use the schedule_sniper tool. Ask for the restaurant name (or slug), date, preferred time, and drop time (when availability opens). Use the slug from search results if available, otherwise the agent will convert the name automatically. If the sniper fails because the slug couldn't be resolved, ask the user for the exact slug from the Resy URL.
+- Before scheduling, call get_current_time to get the accurate current time for computing drop times.
+- When the user asks about their sniper jobs or scheduled snipes, use the view_sniper_jobs tool."""
 
     def define_tools(self):
         """Define Claude tools for reservation tasks."""
@@ -176,12 +185,87 @@ IMPORTANT BEHAVIORS:
                 }
             },
             {
+                "name": "resolve_reservation_conflict",
+                "description": "Resolve an existing reservation conflict. Use when make_resy_reservation returns status 'conflict'. 'continue_booking' cancels the existing reservation and proceeds with the new one. 'keep_existing' keeps the current reservation and aborts the new booking.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "choice": {
+                            "type": "string",
+                            "enum": ["continue_booking", "keep_existing"],
+                            "description": "continue_booking = cancel existing and book new; keep_existing = abort new booking"
+                        },
+                        "config_id": {
+                            "type": "string",
+                            "description": "config_id from the conflict result"
+                        },
+                        "date": {
+                            "type": "string",
+                            "description": "Date from the conflict result"
+                        },
+                        "party_size": {
+                            "type": "integer",
+                            "description": "Party size from the conflict result"
+                        }
+                    },
+                    "required": ["choice", "config_id", "date", "party_size"]
+                }
+            },
+            {
                 "name": "view_my_reservations",
                 "description": "View the user's upcoming reservations on Resy. Use this when the user asks about their current bookings.",
                 "input_schema": {
                     "type": "object",
                     "properties": {},
                     "required": []
+                }
+            },
+            {
+                "name": "get_current_time",
+                "description": "Get the current date and time in Eastern Time (EST/EDT). Use this before scheduling a sniper job to ensure accurate drop times.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "view_sniper_jobs",
+                "description": "View all scheduled reservation sniper jobs and their statuses. Shows restaurant, requested date/time, drop time, and current status for each job.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            },
+            {
+                "name": "schedule_sniper",
+                "description": "Schedule a reservation sniper to automatically book a table when availability drops. The sniper will rapid-poll at the specified drop time and grab the first matching slot.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "restaurant": {
+                            "type": "string",
+                            "description": "Restaurant name or Resy slug (e.g., 'Fish Cheeks' or 'fish-cheeks')"
+                        },
+                        "date": {
+                            "type": "string",
+                            "description": "Reservation date in YYYY-MM-DD format"
+                        },
+                        "preferred_time": {
+                            "type": "string",
+                            "description": "Preferred time slot (e.g., '7:00 PM')"
+                        },
+                        "party_size": {
+                            "type": "integer",
+                            "description": "Number of guests (default: 2)"
+                        },
+                        "drop_time": {
+                            "type": "string",
+                            "description": "When availability drops, ISO datetime (e.g., '2026-02-22T09:00:00')"
+                        }
+                    },
+                    "required": ["restaurant", "date", "preferred_time", "drop_time"]
                 }
             }
         ]
@@ -217,6 +301,7 @@ IMPORTANT BEHAVIORS:
                     formatted.append({
                         'id': r.get('id'),
                         'name': r.get('name'),
+                        'slug': r.get('url_slug'),
                         'location': location_str,
                         'price_range': r.get('price_range'),
                         'rating': r.get('rating')
@@ -321,33 +406,46 @@ IMPORTANT BEHAVIORS:
             )
 
             if result.get('success'):
-                # Determine confirmation status
-                has_confirmation = bool(result.get('reservation_id'))
-                status = 'confirmed' if has_confirmation else 'pending_confirmation'
+                self._save_reservation(result, tool_input)
 
-                # Save to database
-                self.store.add_reservation({
-                    'platform': 'resy',
-                    'restaurant_name': result.get('venue_slug', 'Restaurant'),
-                    'date': tool_input["date"],
-                    'time': result.get('time_slot', 'Time TBD'),
-                    'party_size': tool_input["party_size"],
-                    'confirmation_token': result.get('confirmation_token'),
-                    'confirmation_number': result.get('reservation_id'),
-                    'status': status
-                })
-
-                # If status is modal_opened or no confirmation number, flag as unconfirmed
-                if result.get('status') == 'modal_opened' or not has_confirmation:
+                # If no confirmation number, flag as unconfirmed
+                if not result.get('reservation_id'):
                     result['message'] = 'Booking was submitted but confirmation could not be verified automatically. The user should check their email or Resy app for confirmation.'
 
                 return result
             else:
-                # Check if error suggests the booking might have gone through
-                error_msg = result.get('error', '')
-                if 'Could not confirm' in error_msg:
+                if result.get('status') == 'modal_opened':
+                    result['message'] = 'Booking modal opened but Reserve Now button could not be clicked. The sniper will retry automatically.'
+                elif 'Could not confirm' in result.get('error', ''):
                     result['message'] = 'The booking may have been submitted but we could not verify confirmation on the page. Advise the user to check their Resy app or email.'
                 return result
+
+        elif tool_name == "resolve_reservation_conflict":
+            # Extract venue_slug and time_text from config_id if available
+            config_id_val = tool_input.get("config_id", "")
+            venue_slug = None
+            time_text = None
+            if config_id_val:
+                try:
+                    parsed = parse_config_id(config_id_val)
+                    venue_slug = parsed['venue_slug']
+                    time_text = parsed['time_text']
+                except ValueError:
+                    pass
+
+            result = self.resy_client.resolve_reservation_conflict(
+                choice=tool_input["choice"],
+                config_id=config_id_val,
+                date=tool_input.get("date"),
+                party_size=tool_input.get("party_size"),
+                venue_slug=venue_slug,
+                time_text=time_text
+            )
+
+            if result.get('success') and result.get('status') != 'kept_existing':
+                self._save_reservation(result, tool_input)
+
+            return result
 
         elif tool_name == "view_my_reservations":
             reservations = self.resy_client.get_reservations()
@@ -365,10 +463,155 @@ IMPORTANT BEHAVIORS:
                     'message': 'No upcoming reservations found'
                 }
 
+        elif tool_name == "get_current_time":
+            from zoneinfo import ZoneInfo
+            now_est = datetime.now(ZoneInfo("America/New_York"))
+            return {
+                'success': True,
+                'datetime': now_est.strftime("%Y-%m-%dT%H:%M:%S"),
+                'display': now_est.strftime("%B %d, %Y %I:%M %p %Z"),
+            }
+
+        elif tool_name == "view_sniper_jobs":
+            jobs = self.store.get_all_sniper_jobs()
+            if jobs:
+                formatted = []
+                for j in jobs:
+                    formatted.append({
+                        'job_id': j['id'],
+                        'restaurant': j['venue_slug'],
+                        'date': j['date'],
+                        'preferred_times': j['preferred_times'],
+                        'party_size': j['party_size'],
+                        'status': j['status'],
+                        'scheduled_at': j['scheduled_at'],
+                        'poll_count': j['poll_count'],
+                        'max_attempts': j['max_attempts'],
+                        'notes': j.get('notes'),
+                    })
+                return {
+                    'success': True,
+                    'count': len(formatted),
+                    'jobs': formatted,
+                }
+            else:
+                return {
+                    'success': True,
+                    'count': 0,
+                    'message': 'No sniper jobs found',
+                }
+
+        elif tool_name == "schedule_sniper":
+            return self._schedule_sniper(tool_input)
+
         else:
             return {
                 'success': False,
                 'error': f'Unknown tool: {tool_name}'
+            }
+
+    def _save_reservation(self, result: dict, tool_input: dict) -> None:
+        """Save a reservation to the database.
+
+        Args:
+            result: Result dict from resy_client with venue_slug, time_slot, etc.
+            tool_input: Tool input dict with date, party_size, etc.
+        """
+        has_confirmation = bool(result.get('reservation_id'))
+        status = 'confirmed' if has_confirmation else 'pending_confirmation'
+        self.store.add_reservation({
+            'platform': 'resy',
+            'restaurant_name': result.get('venue_slug', 'Restaurant'),
+            'date': tool_input.get('date', ''),
+            'time': result.get('time_slot', 'Time TBD'),
+            'party_size': tool_input.get('party_size', 0),
+            'confirmation_token': result.get('confirmation_token'),
+            'confirmation_number': result.get('reservation_id'),
+            'status': status
+        })
+
+    def _schedule_sniper(self, tool_input: dict) -> dict:
+        """Schedule a sniper job, remotely via SSH if configured, otherwise locally."""
+        import shlex
+        import subprocess
+
+        restaurant = tool_input["restaurant"]
+        # If it looks like a human name (has spaces or uppercase), convert to slug
+        if ' ' in restaurant or restaurant != restaurant.lower():
+            venue_slug = normalize_slug(restaurant)
+        else:
+            venue_slug = restaurant
+        date = tool_input["date"]
+        preferred_time = tool_input["preferred_time"]
+        party_size = tool_input.get("party_size", Settings.DEFAULT_PARTY_SIZE)
+        drop_time = tool_input["drop_time"]
+
+        remote_host = Settings.SNIPER_REMOTE_HOST
+        if remote_host:
+            remote_dir = Settings.SNIPER_REMOTE_DIR
+            remote_cmd = (
+                f"cd {shlex.quote(remote_dir)} && python3 scripts/run_sniper.py "
+                f"{shlex.quote(venue_slug)} {shlex.quote(date)} {shlex.quote(preferred_time)} "
+                f"--party-size {shlex.quote(str(party_size))} --at {shlex.quote(drop_time)}"
+            )
+            cmd = [
+                "ssh", "-o", "StrictHostKeyChecking=accept-new", remote_host,
+                remote_cmd,
+            ]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                output = result.stdout.strip()
+                if result.returncode == 0:
+                    # Save a local record so we can track remote jobs
+                    job_id = self.store.add_sniper_job({
+                        'venue_slug': venue_slug,
+                        'date': date,
+                        'preferred_times': [preferred_time],
+                        'party_size': party_size,
+                        'scheduled_at': drop_time,
+                        'auto_resolve_conflicts': True,
+                        'notes': f'remote:{remote_host}',
+                    })
+                    return {
+                        'success': True,
+                        'job_id': job_id,
+                        'message': f"Remote sniper scheduled on server: {output}",
+                        'venue_slug': venue_slug,
+                        'remote': True,
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': f"SSH command failed: {result.stderr.strip()}",
+                    }
+            except subprocess.TimeoutExpired:
+                return {'success': False, 'error': 'SSH connection timed out'}
+            except Exception as e:
+                return {'success': False, 'error': f'SSH failed: {e}'}
+        else:
+            from utils.reservation_sniper import ReservationSniper
+            sniper = ReservationSniper(
+                client=self.resy_client,
+                store=self.store,
+            )
+            job_id = sniper.create_job(
+                venue_slug=venue_slug,
+                date=date,
+                preferred_times=[preferred_time],
+                party_size=party_size,
+                scheduled_at=drop_time,
+                auto_resolve_conflicts=True,
+            )
+            return {
+                'success': True,
+                'job_id': job_id,
+                'venue_slug': venue_slug,
+                'message': (
+                    f"Sniper job #{job_id} scheduled for {venue_slug} "
+                    f"on {date} at {preferred_time}. "
+                    f"Will start polling at {drop_time}. "
+                    f"Run `python3 scripts/run_sniper.py --cron` to execute when ready."
+                ),
             }
 
     def _format_confirmation_email(self, result, booking_info):

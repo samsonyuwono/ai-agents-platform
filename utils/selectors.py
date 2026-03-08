@@ -61,6 +61,13 @@ class ResySelectors:
         ':has-text("Complete Your Reservation")',
     ]
 
+    # Conflict modal (existing reservation conflicts with new booking)
+    CONFLICT_MODAL = [
+        'button:has-text("Keep Existing Reservation")',
+        'button:has-text("Continue Booking")',
+        ':has-text("already have a")',
+    ]
+
     # Search results page
     SEARCH_RESULT_CARD = [
         '[data-test-id="search-result"]',
@@ -99,6 +106,12 @@ class ResySelectors:
         'button[class*="TimeSlot"]',
         'button[class*="timeslot"]',
     ]
+
+    # DayOfEventCard (new Resy UI for event-style listings)
+    EVENT_CARD_CONTAINER = '[class*="DayOfEventCard--container"]'
+    EVENT_CARD_DATE = '[class*="DayOfEventCard--selectedDate"]'
+    EVENT_CARD_NAME = '[class*="DayOfEventCard--name"]'
+    EVENT_CARD_BOOK_BUTTON = '.DayOfEventCard--book-button'
 
 
 class SelectorHelper:
