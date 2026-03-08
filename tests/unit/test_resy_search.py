@@ -33,6 +33,7 @@ def _make_browser_client(**overrides):
         client.page = MagicMock()
         client.is_authenticated = True
         client.cookie_file = Path('/tmp/test_cookies.json')
+        client.storage_state_file = Path('/tmp/test_storage_state.json')
 
         for key, val in overrides.items():
             setattr(client, key, val)
@@ -415,6 +416,7 @@ class TestEnsureAuthenticated:
 
     def test_loads_cookies_and_sets_authenticated(self):
         client, _ = _make_browser_client(is_authenticated=False)
+        client._get_storage_state_path = MagicMock(return_value=None)
         client._load_cookies = MagicMock(return_value=True)
         client._login = MagicMock()
 
@@ -426,9 +428,10 @@ class TestEnsureAuthenticated:
 
     def test_calls_login_when_no_cookies(self):
         client, _ = _make_browser_client(is_authenticated=False)
+        client._get_storage_state_path = MagicMock(return_value=None)
         client._load_cookies = MagicMock(return_value=False)
         client._login = MagicMock()
-        client._save_cookies = MagicMock()
+        client._save_session = MagicMock()
 
         client._ensure_authenticated()
 
@@ -437,6 +440,7 @@ class TestEnsureAuthenticated:
     def test_launches_browser_if_no_page(self):
         client, _ = _make_browser_client(is_authenticated=False, page=None)
         client._launch_browser = MagicMock()
+        client._get_storage_state_path = MagicMock(return_value=None)
         client._load_cookies = MagicMock(return_value=True)
 
         client._ensure_authenticated()

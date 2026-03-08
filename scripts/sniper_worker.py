@@ -39,12 +39,26 @@ def _handle_signal(signum, frame):
     _shutdown = True
 
 
-def _clear_cookies_for_proxy():
-    """Clear cached Resy cookies when proxy is configured so the session routes through the proxy."""
+def _clear_session_for_proxy():
+    """Clear cached Resy session files when proxy is configured so the session routes through the proxy."""
     if Settings.has_proxy_configured():
         cookie_file = Path.home() / '.resy_session_cookies.json'
+        storage_state_file = Path.home() / '.resy_storage_state.json'
         cookie_file.unlink(missing_ok=True)
-        logger.info("Cleared cached cookies (proxy is configured)")
+        storage_state_file.unlink(missing_ok=True)
+        logger.info("Cleared cached session files (proxy is configured)")
+
+
+def _check_session_available():
+    """Log a warning if no session files exist, suggesting export_resy_session.py."""
+    cookie_file = Path.home() / '.resy_session_cookies.json'
+    storage_state_file = Path.home() / '.resy_storage_state.json'
+    if not cookie_file.exists() and not storage_state_file.exists():
+        logger.warning(
+            "No Resy session files found. If bot detection is blocking requests, "
+            "run 'python3 scripts/export_resy_session.py' on your laptop to export "
+            "an authenticated session."
+        )
 
 
 def _reset_stale_active_jobs():
@@ -95,7 +109,8 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    _clear_cookies_for_proxy()
+    _clear_session_for_proxy()
+    _check_session_available()
     _reset_stale_active_jobs()
 
     poll_seconds = get_poll_interval()

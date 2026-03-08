@@ -96,8 +96,20 @@ class ResyBrowserClient:
         self.page = None
         self.is_authenticated = False
 
-        # Cookie storage for session persistence
+        # Session storage for persistence (cookies + localStorage)
         self.cookie_file = Path.home() / '.resy_session_cookies.json'
+        self.storage_state_file = Path.home() / '.resy_storage_state.json'
+
+    def _get_storage_state_path(self) -> Optional[str]:
+        """Return storage state file path if it exists and contains valid JSON, else None."""
+        if not self.storage_state_file.exists():
+            return None
+        try:
+            with open(self.storage_state_file, 'r') as f:
+                json.load(f)
+            return str(self.storage_state_file)
+        except (json.JSONDecodeError, OSError):
+            return None
 
     def _launch_browser(self):
         """Launch Playwright browser and create page."""
@@ -124,8 +136,14 @@ class ResyBrowserClient:
                 proxy["password"] = Settings.RESY_PROXY_PASSWORD
             print(f"  🌐 Using proxy: {Settings.RESY_PROXY_SERVER}")
 
+        # Load storage state (cookies + localStorage) if available
+        storage_state_path = self._get_storage_state_path()
+        if storage_state_path:
+            print(f"  ✓ Loaded storage state from {self.storage_state_file.name}")
+
         # Create context with realistic settings
         self.context = self.browser.new_context(
+            storage_state=storage_state_path,
             proxy=proxy,
             user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             viewport={'width': 1280, 'height': 1200},
@@ -237,16 +255,21 @@ class ResyBrowserClient:
             except:
                 pass  # Ignore if mouse movement fails
 
-    def _save_cookies(self):
-        """Save browser cookies to file for session persistence."""
+    def _save_session(self):
+        """Save full browser state (cookies + localStorage) for session persistence."""
         if self.context:
+            try:
+                self.context.storage_state(path=str(self.storage_state_file))
+                print(f"     ✓ Saved storage state")
+            except Exception as e:
+                print(f"     ⚠️  Failed to save storage state: {e}")
+            # Also write legacy cookie file as fallback
             try:
                 cookies = self.context.cookies()
                 with open(self.cookie_file, 'w') as f:
                     json.dump(cookies, f)
-                print(f"     ✓ Saved session cookies")
-            except Exception as e:
-                print(f"     ⚠️  Failed to save cookies: {e}")
+            except Exception:
+                pass
 
     def _load_cookies(self):
         """Load browser cookies from file."""
@@ -379,21 +402,26 @@ class ResyBrowserClient:
         if not self.page:
             self._launch_browser()
 
-        # Try loading saved cookies first
+        # Storage state was already loaded during _launch_browser() via new_context()
+        if self._get_storage_state_path():
+            print("     ✓ Storage state loaded, assuming authenticated")
+            print("     → (Will validate lazily if needed)")
+            self.is_authenticated = True
+            return
+
+        # Fall back to legacy cookie loading
         if self._load_cookies():
-            # Optimistic authentication: assume cookies are valid
-            # If they're not, we'll get an auth error and can handle it then
             print("     ✓ Loaded session cookies, assuming authenticated")
             print("     → (Will validate lazily if needed)")
             self.is_authenticated = True
             return
 
-        # No cookies - perform fresh login
+        # No session - perform fresh login
         self._login()
 
-        # Save cookies for next time
+        # Save session for next time
         if self.is_authenticated:
-            self._save_cookies()
+            self._save_session()
 
     def _login(self):
         """

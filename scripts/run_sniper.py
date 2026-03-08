@@ -46,18 +46,25 @@ def setup_logging(verbose: bool = False):
     )
 
 
-def _clear_cookies_for_proxy():
-    """Clear cached Resy cookies when proxy is configured so the session routes through the proxy."""
+def _clear_session_for_proxy():
+    """Clear cached Resy session files when proxy is configured so the session routes through the proxy."""
     if Settings.has_proxy_configured():
         cookie_file = Path.home() / '.resy_session_cookies.json'
+        storage_state_file = Path.home() / '.resy_storage_state.json'
+        cleared = False
         if cookie_file.exists():
             cookie_file.unlink()
-            print("🍪 Cleared cached cookies (proxy is configured)")
+            cleared = True
+        if storage_state_file.exists():
+            storage_state_file.unlink()
+            cleared = True
+        if cleared:
+            print("🍪 Cleared cached session files (proxy is configured)")
 
 
 def cmd_create_and_run(args):
     """Create a sniper job and optionally run it immediately."""
-    _clear_cookies_for_proxy()
+    _clear_session_for_proxy()
     with ReservationSniper() as sniper:
         preferred_times = args.times if args.times else []
 
@@ -88,7 +95,7 @@ def cmd_create_and_run(args):
 
 def cmd_cron(args):
     """Process all due scheduled jobs."""
-    _clear_cookies_for_proxy()
+    _clear_session_for_proxy()
     with ReservationSniper() as sniper:
         result = sniper.run_scheduled_jobs()
 

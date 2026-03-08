@@ -158,24 +158,46 @@ class TestSniperWorker:
 
         assert sniper.run_scheduled_jobs.call_count >= 2
 
-    def test_clear_cookies_for_proxy(self):
-        """Cookies are cleared when proxy is configured."""
+    def test_clear_session_for_proxy(self):
+        """Session files are cleared when proxy is configured."""
         with patch('scripts.sniper_worker.Settings') as mock_settings:
             mock_settings.has_proxy_configured.return_value = True
             with patch('scripts.sniper_worker.Path') as mock_path:
-                mock_cookie = MagicMock()
-                mock_cookie.exists.return_value = True
-                mock_path.home.return_value.__truediv__ = MagicMock(return_value=mock_cookie)
-                worker._clear_cookies_for_proxy()
-                mock_cookie.unlink.assert_called_once()
+                mock_file = MagicMock()
+                mock_path.home.return_value.__truediv__ = MagicMock(return_value=mock_file)
+                worker._clear_session_for_proxy()
+                # Called twice: once for cookie file, once for storage state
+                assert mock_file.unlink.call_count == 2
 
-    def test_clear_cookies_skipped_without_proxy(self):
-        """Cookies are not cleared when proxy is not configured."""
+    def test_clear_session_skipped_without_proxy(self):
+        """Session files are not cleared when proxy is not configured."""
         with patch('scripts.sniper_worker.Settings') as mock_settings:
             mock_settings.has_proxy_configured.return_value = False
             with patch('scripts.sniper_worker.Path') as mock_path:
-                worker._clear_cookies_for_proxy()
+                worker._clear_session_for_proxy()
                 mock_path.home.assert_not_called()
+
+    def test_check_session_available_warns_when_missing(self):
+        """Warning is logged when no session files exist."""
+        with patch('scripts.sniper_worker.Path') as mock_path:
+            mock_file = MagicMock()
+            mock_file.exists.return_value = False
+            mock_path.home.return_value.__truediv__ = MagicMock(return_value=mock_file)
+            with patch.object(worker.logger, 'warning') as mock_warn:
+                worker._check_session_available()
+            assert mock_warn.called
+            assert 'export_resy_session.py' in mock_warn.call_args[0][0]
+
+    def test_check_session_available_silent_when_exists(self):
+        """No warning when at least one session file exists."""
+        with patch('scripts.sniper_worker.Path') as mock_path:
+            mock_file = MagicMock()
+            # First call (cookie_file) exists, second (storage_state_file) doesn't
+            mock_file.exists.return_value = True
+            mock_path.home.return_value.__truediv__ = MagicMock(return_value=mock_file)
+            with patch.object(worker.logger, 'warning') as mock_warn:
+                worker._check_session_available()
+            mock_warn.assert_not_called()
 
     def test_reset_stale_active_jobs(self):
         """Stale active jobs are reset to pending on startup."""
