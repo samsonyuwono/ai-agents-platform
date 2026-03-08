@@ -43,9 +43,8 @@ def _clear_cookies_for_proxy():
     """Clear cached Resy cookies when proxy is configured so the session routes through the proxy."""
     if Settings.has_proxy_configured():
         cookie_file = Path.home() / '.resy_session_cookies.json'
-        if cookie_file.exists():
-            cookie_file.unlink()
-            logger.info("Cleared cached cookies (proxy is configured)")
+        cookie_file.unlink(missing_ok=True)
+        logger.info("Cleared cached cookies (proxy is configured)")
 
 
 def _reset_stale_active_jobs():

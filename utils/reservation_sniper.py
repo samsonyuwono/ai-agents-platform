@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Dict, List, Optional
 
 from config.settings import Settings
+from utils.reservation_store import _now_est
 from utils.availability_filter import pick_best_slot
 from utils.reservation_store import ReservationStore
 from utils.notification import SniperNotifier
@@ -97,7 +98,7 @@ class ReservationSniper:
         if max_attempts is None:
             max_attempts = Settings.SNIPER_MAX_ATTEMPTS
         if scheduled_at is None:
-            scheduled_at = datetime.now().isoformat()
+            scheduled_at = _now_est()
 
         try:
             datetime.fromisoformat(scheduled_at)

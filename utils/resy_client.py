@@ -210,16 +210,23 @@ class ResyClient:
             venue_id_dict = response.get('id', {})
             venue_id = venue_id_dict.get('resy') if isinstance(venue_id_dict, dict) else None
 
+            location = response.get('location', {})
+            if not isinstance(location, dict):
+                location = {}
+            rater = response.get('rater', {})
+            if not isinstance(rater, dict):
+                rater = {}
+
             venue_info = {
                 'id': venue_id,
                 'name': response.get('name'),
                 'url_slug': response.get('url_slug'),
                 'location': {
-                    'neighborhood': response.get('location', {}).get('neighborhood') if isinstance(response.get('location'), dict) else None,
-                    'city': response.get('location', {}).get('name') if isinstance(response.get('location'), dict) else None,
-                    'address': response.get('location', {}).get('address_1') if isinstance(response.get('location'), dict) else None
+                    'neighborhood': location.get('neighborhood'),
+                    'city': location.get('name'),
+                    'address': location.get('address_1')
                 },
-                'rating': response.get('rater', {}).get('score') if isinstance(response.get('rater'), dict) else None,
+                'rating': rater.get('score'),
                 'price_range': response.get('price_range_id'),
                 'min_party_size': response.get('min_party_size'),
                 'max_party_size': response.get('max_party_size'),

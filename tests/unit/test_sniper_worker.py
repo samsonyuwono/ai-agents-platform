@@ -49,7 +49,7 @@ class TestSniperWorker:
             worker.run_loop(sniper, poll_seconds=3)
 
         assert all(s == 1 for s in sleep_calls)
-        assert len(sleep_calls) >= 3
+        assert len(sleep_calls) == 3
 
     def test_signal_handler_sets_shutdown_flag(self):
         """SIGTERM causes clean exit via shutdown flag."""
