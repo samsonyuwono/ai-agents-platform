@@ -501,7 +501,7 @@ cat logs/daily_digest.log
 
 - **Get key:** <https://resend.com/>
 - **Free tier:** 3,000 emails/month (100/day)
-- **Setup:** Add domain or use `onboarding@resend.dev` for testing
+- **Setup:** Add domain or use `no-reply@resend.dev` for testing
 
 ## 🎯 Best Practices
 

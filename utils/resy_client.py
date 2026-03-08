@@ -23,12 +23,13 @@ class ResyClient:
         self.auth_token = auth_token or Settings.RESY_AUTH_TOKEN
         self.base_url = "https://api.resy.com"
 
-        if not self.api_key or not self.auth_token:
-            raise ValueError("Resy API key and auth token are required")
+        if not self.api_key:
+            raise ValueError("Resy API key is required")
+        # auth_token can be None — will be acquired via refresh_auth_token()
 
         # Rate limiting - track last request time
         self.last_request_time = 0
-        self.min_delay_seconds = 2  # Minimum 2 seconds between requests
+        self.min_delay_seconds = 1  # Minimum 1 second between requests
 
         # Session with realistic user agent
         self.session = requests.Session()
@@ -40,6 +41,53 @@ class ResyClient:
             'Origin': 'https://resy.com',
             'Referer': 'https://resy.com/',
         })
+
+    def refresh_auth_token(self, email: str = None, password: str = None) -> str:
+        """Get fresh auth token via Resy's password auth endpoint.
+
+        Args:
+            email: Resy account email (defaults to Settings.RESY_EMAIL)
+            password: Resy account password (defaults to Settings.RESY_PASSWORD)
+
+        Returns:
+            Auth token string
+
+        Raises:
+            Exception: If authentication fails
+        """
+        email = email or Settings.RESY_EMAIL
+        password = password or Settings.RESY_PASSWORD
+
+        if not email or not password:
+            raise ValueError("Email and password required for token refresh")
+
+        self._rate_limit()
+
+        url = f"{self.base_url}/3/auth/password"
+        headers = {
+            'Authorization': f'ResyAPI api_key="{self.api_key}"',
+        }
+
+        try:
+            response = self.session.post(
+                url,
+                data={'email': email, 'password': password},
+                headers=headers
+            )
+            response.raise_for_status()
+            token = response.json().get('token')
+
+            if not token:
+                raise Exception("No token in auth response")
+
+            self.auth_token = token
+            logger.info("Auth token refreshed successfully")
+            return token
+
+        except requests.exceptions.HTTPError as e:
+            raise Exception(f"Auth failed: {e.response.status_code} - {e.response.text}")
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Auth network error: {str(e)}")
 
     def _rate_limit(self):
         """
@@ -94,6 +142,21 @@ class ResyClient:
                 logger.debug("Requesting %s", debug_url)
 
             response = self.session.request(method, url, **kwargs)
+
+            # Auto-refresh auth token on 401 and retry once
+            if response.status_code == 401:
+                logger.warning("Got 401, attempting token refresh...")
+                try:
+                    self.refresh_auth_token()
+                    # Update auth headers for retry
+                    headers = kwargs.get('headers', {})
+                    headers['X-Resy-Auth-Token'] = self.auth_token
+                    headers['X-Resy-Universal-Auth'] = self.auth_token
+                    kwargs['headers'] = headers
+                    response = self.session.request(method, url, **kwargs)
+                except Exception as refresh_err:
+                    logger.error("Token refresh failed: %s", refresh_err)
+                    raise Exception("Authentication failed. Check your RESY_API_KEY and RESY_AUTH_TOKEN")
 
             # Check for rate limiting
             if response.status_code == 429:
@@ -203,13 +266,22 @@ class ResyClient:
         Get available reservation slots for a venue.
 
         Args:
-            venue_id: Resy venue ID
+            venue_id: Resy venue ID (numeric) or URL slug (e.g., 'fish-cheeks')
             date: Date in YYYY-MM-DD format
             party_size: Number of guests (default: 2)
 
         Returns:
             List of available time slots with slot details
         """
+        # If venue_id is not numeric, resolve slug to ID first
+        if not str(venue_id).isdigit():
+            logger.info("Resolving slug '%s' to venue ID...", venue_id)
+            venue = self.get_venue_by_slug(venue_id)
+            if not venue or not venue.get('id'):
+                logger.error("Could not resolve slug '%s' to venue ID", venue_id)
+                return []
+            venue_id = venue['id']
+
         logger.info("Checking availability for venue %s on %s for %d people", venue_id, date, party_size)
 
         params = {
@@ -346,6 +418,33 @@ class ResyClient:
                 'success': False,
                 'error': str(e)
             }
+
+    def resolve_reservation_conflict(self, choice: str, config_id: str, date: str, party_size: int, **kwargs) -> Dict:
+        """Resolve a reservation conflict by cancelling existing and rebooking.
+
+        Args:
+            choice: 'keep_existing' to keep current, anything else to rebook
+            config_id: Config ID for the new reservation
+            date: Date in YYYY-MM-DD format
+            party_size: Number of guests
+            **kwargs: Additional arguments (ignored, for interface compat)
+
+        Returns:
+            Result dict with success status
+        """
+        if choice == 'keep_existing':
+            return {'success': True, 'status': 'kept_existing'}
+
+        # Find and cancel conflicting reservation on the same date
+        reservations = self.get_reservations()
+        for res in reservations:
+            if res.get('date') == date:
+                logger.info("Cancelling conflicting reservation %s on %s", res['id'], date)
+                self.cancel_reservation(res['id'])
+                break
+
+        # Rebook with the new config
+        return self.make_reservation(config_id, date, party_size)
 
     def get_reservations(self) -> List[Dict]:
         """

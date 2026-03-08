@@ -92,8 +92,14 @@ class Settings:
 
     @classmethod
     def has_resy_configured(cls):
-        """Check if Resy API is properly configured."""
-        return bool(cls.RESY_API_KEY and cls.RESY_AUTH_TOKEN)
+        """Check if Resy API is properly configured.
+
+        API key is always required. Auth token is optional if email/password
+        are configured (token can be acquired via refresh_auth_token).
+        """
+        if not cls.RESY_API_KEY:
+            return False
+        return bool(cls.RESY_AUTH_TOKEN or (cls.RESY_EMAIL and cls.RESY_PASSWORD))
 
     @classmethod
     def has_opentable_configured(cls):
