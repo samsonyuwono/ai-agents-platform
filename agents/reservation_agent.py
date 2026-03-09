@@ -636,18 +636,24 @@ Your reservation has been successfully booked.
 *Booked via your AI Reservation Agent*
 """
 
-    def run(self, user_message, max_iterations=10):
+    def run(self, user_message, max_iterations=10, event_callback=None):
         """
         Run the agent with a user message.
 
         Args:
             user_message: The user's request
             max_iterations: Maximum number of tool use iterations
+            event_callback: Optional callable(event_type, data) for streaming events.
+                           Event types: 'thinking', 'tool_call', 'tool_result', 'message', 'done'
 
         Returns:
             Final response from the agent
         """
         logger.info("Reservation Agent processing request")
+
+        def emit(event_type, data=None):
+            if event_callback:
+                event_callback(event_type, data or {})
 
         # Add user message to history
         self.add_to_history("user", user_message)
@@ -656,6 +662,7 @@ Your reservation has been successfully booked.
         while iteration < max_iterations:
             iteration += 1
             logger.debug("Thinking (iteration %d)", iteration)
+            emit("thinking", {"iteration": iteration})
 
             # Call Claude with tool definitions and system prompt
             response = self.call_claude(
@@ -679,9 +686,12 @@ Your reservation has been successfully booked.
                         tool_use_id = content_block.id
 
                         logger.info("Using tool: %s", tool_name)
+                        emit("tool_call", {"tool": tool_name, "input": tool_input})
 
                         # Execute the tool
                         result = self.execute_tool(tool_name, tool_input)
+
+                        emit("tool_result", {"tool": tool_name, "result": result})
 
                         tool_results.append({
                             "type": "tool_result",
@@ -703,6 +713,8 @@ Your reservation has been successfully booked.
                         final_answer += content_block.text
 
                 logger.info("Final response generated")
+                emit("message", {"text": final_answer})
+                emit("done")
                 return final_answer
 
             else:
@@ -711,7 +723,10 @@ Your reservation has been successfully booked.
                 break
 
         logger.warning("Max iterations (%d) reached", max_iterations)
-        return "I apologize, but I've reached my maximum thinking iterations. Please try rephrasing your request."
+        msg = "I apologize, but I've reached my maximum thinking iterations. Please try rephrasing your request."
+        emit("message", {"text": msg})
+        emit("done")
+        return msg
 
     def chat(self):
         """Interactive chat mode for reservations."""
