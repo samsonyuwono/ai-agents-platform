@@ -31,7 +31,7 @@ class ReservationStore:
         if db_dir and not os.path.exists(db_dir):
             os.makedirs(db_dir)
 
-        self.conn = sqlite3.connect(self.db_path)
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row  # Return rows as dictionaries
         self._initialize_tables()
 

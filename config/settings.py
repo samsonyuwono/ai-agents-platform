@@ -60,6 +60,11 @@ class Settings:
     SNIPER_REMOTE_HOST = os.environ.get("SNIPER_REMOTE_HOST")  # e.g., "root@159.89.41.103"
     SNIPER_REMOTE_DIR = os.environ.get("SNIPER_REMOTE_DIR", "/root/ai-agents")
 
+    # Web API Authentication
+    WEB_AUTH_PASSWORD = os.environ.get("WEB_AUTH_PASSWORD")
+    WEB_JWT_SECRET = os.environ.get("WEB_JWT_SECRET", "change-me-in-production")
+    WEB_CORS_ORIGINS = os.environ.get("WEB_CORS_ORIGINS", "http://localhost:5173")
+
     # Model Configuration
     DEFAULT_MODEL = "claude-sonnet-4-20250514"
     MAX_TOKENS = 4096

@@ -5,6 +5,9 @@ Interactive agent for making restaurant reservations via Resy.
 
 import json
 import logging
+import os
+import subprocess
+import sys
 from datetime import datetime
 from agents.base_agent import BaseAgent
 
@@ -14,6 +17,17 @@ from utils.reservation_store import ReservationStore
 from utils.email_sender import EmailSender
 from utils.slug_utils import parse_config_id, normalize_slug
 from config.settings import Settings
+
+# Path to browser search subprocess helper
+_BROWSER_SEARCH_SCRIPT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts", "browser_search.py"
+)
+
+
+def _is_threading_error(e: Exception) -> bool:
+    """Check if exception is a Playwright greenlet threading error."""
+    return "different thread" in str(e)
 
 
 class ReservationAgent(BaseAgent):
@@ -284,10 +298,17 @@ IMPORTANT BEHAVIORS:
         logger.info("Executing: %s", tool_name)
 
         if tool_name == "search_resy_restaurants":
-            results = self.resy_client.search_venues(
-                query=tool_input["query"],
-                location=tool_input.get("location")
-            )
+            search_args = {"query": tool_input["query"], "location": tool_input.get("location")}
+            try:
+                results = self.resy_client.search_venues(**search_args)
+            except Exception as e:
+                if _is_threading_error(e):
+                    fallback = self._handle_threading_fallback("search_venues", search_args)
+                    if not fallback.get("success"):
+                        return fallback
+                    results = fallback.get("results", [])
+                else:
+                    raise
 
             # Format results for Claude
             if results:
@@ -326,13 +347,23 @@ IMPORTANT BEHAVIORS:
                     'message': 'Cuisine search requires browser mode. Set RESY_CLIENT_MODE=browser in .env'
                 }
 
-            results = self.resy_client.search_by_cuisine(
-                cuisine=tool_input.get("cuisine"),
-                neighborhood=tool_input.get("neighborhood"),
-                location=tool_input.get("location", "ny"),
-                date=tool_input.get("date"),
-                party_size=tool_input.get("party_size", 2)
-            )
+            cuisine_args = {
+                "cuisine": tool_input.get("cuisine"),
+                "neighborhood": tool_input.get("neighborhood"),
+                "location": tool_input.get("location", "ny"),
+                "date": tool_input.get("date"),
+                "party_size": tool_input.get("party_size", 2)
+            }
+            try:
+                results = self.resy_client.search_by_cuisine(**cuisine_args)
+            except Exception as e:
+                if _is_threading_error(e):
+                    fallback = self._handle_threading_fallback("search_by_cuisine", cuisine_args)
+                    if not fallback.get("success"):
+                        return fallback
+                    results = fallback.get("results", [])
+                else:
+                    raise
 
             if results:
                 formatted = []
@@ -369,11 +400,21 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "check_resy_availability":
-            slots = self.resy_client.get_availability(
-                venue_id=tool_input["venue_id"],
-                date=tool_input["date"],
-                party_size=tool_input["party_size"]
-            )
+            avail_args = {
+                "venue_id": tool_input["venue_id"],
+                "date": tool_input["date"],
+                "party_size": tool_input["party_size"]
+            }
+            try:
+                slots = self.resy_client.get_availability(**avail_args)
+            except Exception as e:
+                if _is_threading_error(e):
+                    fallback = self._handle_threading_fallback("get_availability", avail_args)
+                    if not fallback.get("success"):
+                        return fallback
+                    slots = fallback.get("results", [])
+                else:
+                    raise
 
             if slots:
                 # Format slots for Claude
@@ -399,11 +440,18 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "make_resy_reservation":
-            result = self.resy_client.make_reservation(
-                config_id=tool_input["config_id"],
-                date=tool_input["date"],
-                party_size=tool_input["party_size"]
-            )
+            reservation_args = {
+                "config_id": tool_input["config_id"],
+                "date": tool_input["date"],
+                "party_size": tool_input["party_size"]
+            }
+            try:
+                result = self.resy_client.make_reservation(**reservation_args)
+            except Exception as e:
+                if _is_threading_error(e):
+                    result = self._handle_threading_fallback("make_reservation", reservation_args)
+                else:
+                    raise
 
             if result.get('success'):
                 self._save_reservation(result, tool_input)
@@ -433,14 +481,21 @@ IMPORTANT BEHAVIORS:
                 except ValueError:
                     pass
 
-            result = self.resy_client.resolve_reservation_conflict(
-                choice=tool_input["choice"],
-                config_id=config_id_val,
-                date=tool_input.get("date"),
-                party_size=tool_input.get("party_size"),
-                venue_slug=venue_slug,
-                time_text=time_text
-            )
+            conflict_args = {
+                "choice": tool_input["choice"],
+                "config_id": config_id_val,
+                "date": tool_input.get("date"),
+                "party_size": tool_input.get("party_size"),
+                "venue_slug": venue_slug,
+                "time_text": time_text
+            }
+            try:
+                result = self.resy_client.resolve_reservation_conflict(**conflict_args)
+            except Exception as e:
+                if _is_threading_error(e):
+                    result = self._handle_threading_fallback("resolve_reservation_conflict", conflict_args)
+                else:
+                    raise
 
             if result.get('success') and result.get('status') != 'kept_existing':
                 self._save_reservation(result, tool_input)
@@ -448,7 +503,16 @@ IMPORTANT BEHAVIORS:
             return result
 
         elif tool_name == "view_my_reservations":
-            reservations = self.resy_client.get_reservations()
+            try:
+                reservations = self.resy_client.get_reservations()
+            except Exception as e:
+                if _is_threading_error(e):
+                    fallback = self._handle_threading_fallback("get_reservations", {})
+                    if not fallback.get("success"):
+                        return fallback
+                    reservations = fallback.get("results", [])
+                else:
+                    raise
 
             if reservations:
                 return {
@@ -509,6 +573,46 @@ IMPORTANT BEHAVIORS:
                 'success': False,
                 'error': f'Unknown tool: {tool_name}'
             }
+
+    def _browser_search_subprocess(self, method: str, args: dict) -> dict:
+        """Run a browser search in a subprocess to avoid Playwright threading issues.
+
+        Args:
+            method: 'search_venues' or 'search_by_cuisine'
+            args: Dict of arguments to pass to the method
+
+        Returns:
+            Dict with 'success' and 'results' or 'error'
+        """
+        try:
+            result = subprocess.run(
+                [sys.executable, _BROWSER_SEARCH_SCRIPT, method, json.dumps(args)],
+                capture_output=True, text=True, timeout=120
+            )
+            # stdout has only the JSON result (browser logs go to stderr)
+            stdout = result.stdout.strip()
+            if not stdout:
+                return {"success": False, "error": f"Browser search returned no output. stderr: {result.stderr[-300:] if result.stderr else '(empty)'}"}
+            return json.loads(stdout)
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Browser search timed out"}
+        except json.JSONDecodeError:
+            return {"success": False, "error": f"Failed to parse browser search output: {result.stdout[-200:] if result.stdout else result.stderr[-200:]}"}
+        except Exception as e:
+            return {"success": False, "error": f"Browser search subprocess failed: {e}"}
+
+    def _handle_threading_fallback(self, method: str, args: dict) -> dict:
+        """Handle Playwright threading error with subprocess fallback.
+
+        Returns the raw subprocess result dict. For search methods this has
+        {"success": True, "results": [...]}, for action methods it passes
+        through the browser client's result structure directly.
+        """
+        logger.info("Threading error, falling back to subprocess for: %s", method)
+        sub_result = self._browser_search_subprocess(method, args)
+        if not sub_result.get("success") and "error" in sub_result:
+            sub_result['message'] = sub_result.pop('error')
+        return sub_result
 
     def _save_reservation(self, result: dict, tool_input: dict) -> None:
         """Save a reservation to the database.
@@ -636,18 +740,24 @@ Your reservation has been successfully booked.
 *Booked via your AI Reservation Agent*
 """
 
-    def run(self, user_message, max_iterations=10):
+    def run(self, user_message, max_iterations=10, event_callback=None):
         """
         Run the agent with a user message.
 
         Args:
             user_message: The user's request
             max_iterations: Maximum number of tool use iterations
+            event_callback: Optional callable(event_type, data) for streaming events.
+                           Event types: 'thinking', 'tool_call', 'tool_result', 'message', 'done'
 
         Returns:
             Final response from the agent
         """
         logger.info("Reservation Agent processing request")
+
+        def emit(event_type, data=None):
+            if event_callback:
+                event_callback(event_type, data or {})
 
         # Add user message to history
         self.add_to_history("user", user_message)
@@ -656,6 +766,7 @@ Your reservation has been successfully booked.
         while iteration < max_iterations:
             iteration += 1
             logger.debug("Thinking (iteration %d)", iteration)
+            emit("thinking", {"iteration": iteration})
 
             # Call Claude with tool definitions and system prompt
             response = self.call_claude(
@@ -679,9 +790,12 @@ Your reservation has been successfully booked.
                         tool_use_id = content_block.id
 
                         logger.info("Using tool: %s", tool_name)
+                        emit("tool_call", {"tool": tool_name, "input": tool_input})
 
                         # Execute the tool
                         result = self.execute_tool(tool_name, tool_input)
+
+                        emit("tool_result", {"tool": tool_name, "result": result})
 
                         tool_results.append({
                             "type": "tool_result",
@@ -703,6 +817,8 @@ Your reservation has been successfully booked.
                         final_answer += content_block.text
 
                 logger.info("Final response generated")
+                emit("message", {"text": final_answer})
+                emit("done")
                 return final_answer
 
             else:
@@ -711,7 +827,10 @@ Your reservation has been successfully booked.
                 break
 
         logger.warning("Max iterations (%d) reached", max_iterations)
-        return "I apologize, but I've reached my maximum thinking iterations. Please try rephrasing your request."
+        msg = "I apologize, but I've reached my maximum thinking iterations. Please try rephrasing your request."
+        emit("message", {"text": msg})
+        emit("done")
+        return msg
 
     def chat(self):
         """Interactive chat mode for reservations."""
