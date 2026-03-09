@@ -11,7 +11,6 @@
 
 ## Medium Priority
 
-- [ ] **Resolve OpenTable integration** — Settings stubs exist (`has_opentable_configured()`, env vars) but no client implementation. Either build it out or remove the stubs to reduce confusion. (`config/settings.py`)
 - [ ] **Add resy_browser_client tests** — ~1800 lines with zero unit tests. At minimum, test the parsing/extraction logic separately from Playwright calls. (`utils/resy_browser_client.py`)
 - [ ] **Document remote sniper deployment** — `SNIPER_REMOTE_HOST` setup, SSH keys, systemd service installation, and monitoring. No docs exist beyond the deploy script itself. (`scripts/deploy_sniper.sh`, `deploy/sniper.service`)
 - [ ] **Clean up bare exceptions in browser client** — 22+ bare `except:` clauses. CLAUDE.md discourages this for new code. Gradually replace with specific exception types where feasible. (`utils/resy_browser_client.py`)
@@ -22,7 +21,6 @@
 - [ ] **Archive debug scripts** — `scripts/debug_buttons.py` and `scripts/auto_check_availability.py` are loose one-off scripts. Either integrate into the framework or move to a `scripts/debug/` folder.
 - [ ] **Reduce script/utils duplication** — `scripts/reservation_sniper.py` wraps `utils/reservation_sniper.py` with minimal added value. Consider consolidating.
 - [ ] **Add integration test suite** — `tests/integration/` folder exists but is mostly empty. Add tests that exercise real API calls (gated behind env vars / CI flags).
-- [ ] **Sniper job dashboard** — CLI or simple web view for monitoring sniper job status, poll counts, and outcomes instead of tailing journalctl.
 
 ## Done (Recently Completed)
 
