@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-Subprocess helper for browser-based Resy searches.
+Subprocess helper for browser-based Resy operations.
 
 Runs Playwright in its own process to avoid threading issues
 when called from the web API's background thread.
 
 Usage:
     python3 scripts/browser_search.py search_venues '{"query": "Carbone"}'
-    python3 scripts/browser_search.py search_by_cuisine '{"cuisine": "Japanese", "neighborhood": "Manhattan"}'
+    python3 scripts/browser_search.py search_by_cuisine '{"cuisine": "Japanese"}'
+    python3 scripts/browser_search.py make_reservation '{"config_id": "...", "date": "...", "party_size": 2}'
+    python3 scripts/browser_search.py get_availability '{"venue_id": "...", "date": "...", "party_size": 2}'
+    python3 scripts/browser_search.py get_reservations '{}'
 """
 
 import json
@@ -62,6 +65,38 @@ def main():
                 party_size=args.get("party_size", 2)
             )
             output_json({"success": True, "results": results})
+
+        elif method == "get_availability":
+            results = client.get_availability(
+                venue_id=args["venue_id"],
+                date=args["date"],
+                party_size=args.get("party_size", 2)
+            )
+            output_json({"success": True, "results": results})
+
+        elif method == "make_reservation":
+            result = client.make_reservation(
+                config_id=args["config_id"],
+                date=args["date"],
+                party_size=args.get("party_size", 2),
+                payment_method_id=args.get("payment_method_id")
+            )
+            output_json(result)  # already has success/error structure
+
+        elif method == "get_reservations":
+            results = client.get_reservations()
+            output_json({"success": True, "results": results})
+
+        elif method == "resolve_reservation_conflict":
+            result = client.resolve_reservation_conflict(
+                choice=args["choice"],
+                config_id=args.get("config_id"),
+                date=args.get("date"),
+                party_size=args.get("party_size"),
+                venue_slug=args.get("venue_slug"),
+                time_text=args.get("time_text")
+            )
+            output_json(result)  # already has success/error structure
 
         else:
             output_json({"success": False, "error": f"Unknown method: {method}"})

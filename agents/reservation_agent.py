@@ -303,9 +303,10 @@ IMPORTANT BEHAVIORS:
                 results = self.resy_client.search_venues(**search_args)
             except Exception as e:
                 if _is_threading_error(e):
-                    results = self._handle_threading_fallback("search_venues", search_args)
-                    if isinstance(results, dict):
-                        return results  # error response
+                    fallback = self._handle_threading_fallback("search_venues", search_args)
+                    if not fallback.get("success"):
+                        return fallback
+                    results = fallback.get("results", [])
                 else:
                     raise
 
@@ -357,9 +358,10 @@ IMPORTANT BEHAVIORS:
                 results = self.resy_client.search_by_cuisine(**cuisine_args)
             except Exception as e:
                 if _is_threading_error(e):
-                    results = self._handle_threading_fallback("search_by_cuisine", cuisine_args)
-                    if isinstance(results, dict):
-                        return results  # error response
+                    fallback = self._handle_threading_fallback("search_by_cuisine", cuisine_args)
+                    if not fallback.get("success"):
+                        return fallback
+                    results = fallback.get("results", [])
                 else:
                     raise
 
@@ -398,19 +400,21 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "check_resy_availability":
+            avail_args = {
+                "venue_id": tool_input["venue_id"],
+                "date": tool_input["date"],
+                "party_size": tool_input["party_size"]
+            }
             try:
-                slots = self.resy_client.get_availability(
-                    venue_id=tool_input["venue_id"],
-                    date=tool_input["date"],
-                    party_size=tool_input["party_size"]
-                )
+                slots = self.resy_client.get_availability(**avail_args)
             except Exception as e:
                 if _is_threading_error(e):
-                    return {
-                        'success': False,
-                        'message': 'Availability check is not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
-                    }
-                raise
+                    fallback = self._handle_threading_fallback("get_availability", avail_args)
+                    if not fallback.get("success"):
+                        return fallback
+                    slots = fallback.get("results", [])
+                else:
+                    raise
 
             if slots:
                 # Format slots for Claude
@@ -436,19 +440,18 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "make_resy_reservation":
+            reservation_args = {
+                "config_id": tool_input["config_id"],
+                "date": tool_input["date"],
+                "party_size": tool_input["party_size"]
+            }
             try:
-                result = self.resy_client.make_reservation(
-                    config_id=tool_input["config_id"],
-                    date=tool_input["date"],
-                    party_size=tool_input["party_size"]
-                )
+                result = self.resy_client.make_reservation(**reservation_args)
             except Exception as e:
                 if _is_threading_error(e):
-                    return {
-                        'success': False,
-                        'message': 'Reservations are not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
-                    }
-                raise
+                    result = self._handle_threading_fallback("make_reservation", reservation_args)
+                else:
+                    raise
 
             if result.get('success'):
                 self._save_reservation(result, tool_input)
@@ -478,22 +481,21 @@ IMPORTANT BEHAVIORS:
                 except ValueError:
                     pass
 
+            conflict_args = {
+                "choice": tool_input["choice"],
+                "config_id": config_id_val,
+                "date": tool_input.get("date"),
+                "party_size": tool_input.get("party_size"),
+                "venue_slug": venue_slug,
+                "time_text": time_text
+            }
             try:
-                result = self.resy_client.resolve_reservation_conflict(
-                    choice=tool_input["choice"],
-                    config_id=config_id_val,
-                    date=tool_input.get("date"),
-                    party_size=tool_input.get("party_size"),
-                    venue_slug=venue_slug,
-                    time_text=time_text
-                )
+                result = self.resy_client.resolve_reservation_conflict(**conflict_args)
             except Exception as e:
                 if _is_threading_error(e):
-                    return {
-                        'success': False,
-                        'message': 'Conflict resolution is not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
-                    }
-                raise
+                    result = self._handle_threading_fallback("resolve_reservation_conflict", conflict_args)
+                else:
+                    raise
 
             if result.get('success') and result.get('status') != 'kept_existing':
                 self._save_reservation(result, tool_input)
@@ -505,11 +507,12 @@ IMPORTANT BEHAVIORS:
                 reservations = self.resy_client.get_reservations()
             except Exception as e:
                 if _is_threading_error(e):
-                    return {
-                        'success': False,
-                        'message': 'Viewing reservations is not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
-                    }
-                raise
+                    fallback = self._handle_threading_fallback("get_reservations", {})
+                    if not fallback.get("success"):
+                        return fallback
+                    reservations = fallback.get("results", [])
+                else:
+                    raise
 
             if reservations:
                 return {
@@ -598,17 +601,18 @@ IMPORTANT BEHAVIORS:
         except Exception as e:
             return {"success": False, "error": f"Browser search subprocess failed: {e}"}
 
-    def _handle_threading_fallback(self, method: str, args: dict):
+    def _handle_threading_fallback(self, method: str, args: dict) -> dict:
         """Handle Playwright threading error with subprocess fallback.
 
-        Returns:
-            list on success (search results), or dict on failure (error response)
+        Returns the raw subprocess result dict. For search methods this has
+        {"success": True, "results": [...]}, for action methods it passes
+        through the browser client's result structure directly.
         """
-        logger.info("Threading error, falling back to subprocess browser search")
+        logger.info("Threading error, falling back to subprocess for: %s", method)
         sub_result = self._browser_search_subprocess(method, args)
-        if sub_result.get("success"):
-            return sub_result.get("results", [])
-        return {'success': False, 'message': sub_result.get('error', 'Browser search failed')}
+        if not sub_result.get("success") and "error" in sub_result:
+            sub_result['message'] = sub_result.pop('error')
+        return sub_result
 
     def _save_reservation(self, result: dict, tool_input: dict) -> None:
         """Save a reservation to the database.
