@@ -873,6 +873,8 @@ class ResyBrowserClient:
         except Exception as e:
             print(f"     ✗ Search failed: {e}")
             logger.error("Cuisine search failed: %s", e)
+            if "different thread" in str(e):
+                raise
             return []
 
     def get_venue_by_slug(self, url_slug: str, location: str = 'ny') -> Optional[Dict]:
@@ -955,6 +957,8 @@ class ResyBrowserClient:
 
         except Exception as e:
             print(f"    ✗ Venue lookup failed: {e}")
+            if "different thread" in str(e):
+                raise
             return None
 
     def get_availability(self, venue_id: str, date: str, party_size: int = 2) -> List[Dict]:
@@ -1136,6 +1140,8 @@ class ResyBrowserClient:
 
         except Exception as e:
             print(f"    ✗ Availability check failed: {e}")
+            if "different thread" in str(e):
+                raise
             import traceback
             traceback.print_exc()
             return []
@@ -1627,6 +1633,8 @@ class ResyBrowserClient:
 
         except Exception as e:
             print(f"     ✗ Reservation failed: {e}")
+            if "different thread" in str(e):
+                raise
 
             self._screenshot('booking_error')
 
@@ -1873,6 +1881,8 @@ class ResyBrowserClient:
 
         except Exception as e:
             print(f"     ✗ Conflict resolution failed: {e}")
+            if "different thread" in str(e):
+                raise
             return {
                 'success': False,
                 'error': str(e)

@@ -5,6 +5,9 @@ Interactive agent for making restaurant reservations via Resy.
 
 import json
 import logging
+import os
+import subprocess
+import sys
 from datetime import datetime
 from agents.base_agent import BaseAgent
 
@@ -14,6 +17,12 @@ from utils.reservation_store import ReservationStore
 from utils.email_sender import EmailSender
 from utils.slug_utils import parse_config_id, normalize_slug
 from config.settings import Settings
+
+# Path to browser search subprocess helper
+_BROWSER_SEARCH_SCRIPT = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts", "browser_search.py"
+)
 
 
 class ReservationAgent(BaseAgent):
@@ -284,10 +293,23 @@ IMPORTANT BEHAVIORS:
         logger.info("Executing: %s", tool_name)
 
         if tool_name == "search_resy_restaurants":
-            results = self.resy_client.search_venues(
-                query=tool_input["query"],
-                location=tool_input.get("location")
-            )
+            try:
+                results = self.resy_client.search_venues(
+                    query=tool_input["query"],
+                    location=tool_input.get("location")
+                )
+            except Exception as e:
+                if "different thread" in str(e):
+                    logger.info("Threading error, falling back to subprocess browser search")
+                    sub_result = self._browser_search_subprocess("search_venues", {
+                        "query": tool_input["query"],
+                        "location": tool_input.get("location")
+                    })
+                    results = sub_result.get("results", []) if sub_result.get("success") else []
+                    if not sub_result.get("success"):
+                        return {'success': False, 'message': sub_result.get('error', 'Browser search failed')}
+                else:
+                    raise
 
             # Format results for Claude
             if results:
@@ -326,13 +348,29 @@ IMPORTANT BEHAVIORS:
                     'message': 'Cuisine search requires browser mode. Set RESY_CLIENT_MODE=browser in .env'
                 }
 
-            results = self.resy_client.search_by_cuisine(
-                cuisine=tool_input.get("cuisine"),
-                neighborhood=tool_input.get("neighborhood"),
-                location=tool_input.get("location", "ny"),
-                date=tool_input.get("date"),
-                party_size=tool_input.get("party_size", 2)
-            )
+            try:
+                results = self.resy_client.search_by_cuisine(
+                    cuisine=tool_input.get("cuisine"),
+                    neighborhood=tool_input.get("neighborhood"),
+                    location=tool_input.get("location", "ny"),
+                    date=tool_input.get("date"),
+                    party_size=tool_input.get("party_size", 2)
+                )
+            except Exception as e:
+                if "different thread" in str(e):
+                    logger.info("Threading error, falling back to subprocess browser search")
+                    sub_result = self._browser_search_subprocess("search_by_cuisine", {
+                        "cuisine": tool_input.get("cuisine"),
+                        "neighborhood": tool_input.get("neighborhood"),
+                        "location": tool_input.get("location", "ny"),
+                        "date": tool_input.get("date"),
+                        "party_size": tool_input.get("party_size", 2)
+                    })
+                    results = sub_result.get("results", []) if sub_result.get("success") else []
+                    if not sub_result.get("success"):
+                        return {'success': False, 'message': sub_result.get('error', 'Browser search failed')}
+                else:
+                    raise
 
             if results:
                 formatted = []
@@ -369,11 +407,19 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "check_resy_availability":
-            slots = self.resy_client.get_availability(
-                venue_id=tool_input["venue_id"],
-                date=tool_input["date"],
-                party_size=tool_input["party_size"]
-            )
+            try:
+                slots = self.resy_client.get_availability(
+                    venue_id=tool_input["venue_id"],
+                    date=tool_input["date"],
+                    party_size=tool_input["party_size"]
+                )
+            except Exception as e:
+                if "different thread" in str(e):
+                    return {
+                        'success': False,
+                        'message': 'Availability check is not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
+                    }
+                raise
 
             if slots:
                 # Format slots for Claude
@@ -399,11 +445,19 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "make_resy_reservation":
-            result = self.resy_client.make_reservation(
-                config_id=tool_input["config_id"],
-                date=tool_input["date"],
-                party_size=tool_input["party_size"]
-            )
+            try:
+                result = self.resy_client.make_reservation(
+                    config_id=tool_input["config_id"],
+                    date=tool_input["date"],
+                    party_size=tool_input["party_size"]
+                )
+            except Exception as e:
+                if "different thread" in str(e):
+                    return {
+                        'success': False,
+                        'message': 'Reservations are not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
+                    }
+                raise
 
             if result.get('success'):
                 self._save_reservation(result, tool_input)
@@ -433,14 +487,22 @@ IMPORTANT BEHAVIORS:
                 except ValueError:
                     pass
 
-            result = self.resy_client.resolve_reservation_conflict(
-                choice=tool_input["choice"],
-                config_id=config_id_val,
-                date=tool_input.get("date"),
-                party_size=tool_input.get("party_size"),
-                venue_slug=venue_slug,
-                time_text=time_text
-            )
+            try:
+                result = self.resy_client.resolve_reservation_conflict(
+                    choice=tool_input["choice"],
+                    config_id=config_id_val,
+                    date=tool_input.get("date"),
+                    party_size=tool_input.get("party_size"),
+                    venue_slug=venue_slug,
+                    time_text=time_text
+                )
+            except Exception as e:
+                if "different thread" in str(e):
+                    return {
+                        'success': False,
+                        'message': 'Conflict resolution is not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
+                    }
+                raise
 
             if result.get('success') and result.get('status') != 'kept_existing':
                 self._save_reservation(result, tool_input)
@@ -448,7 +510,15 @@ IMPORTANT BEHAVIORS:
             return result
 
         elif tool_name == "view_my_reservations":
-            reservations = self.resy_client.get_reservations()
+            try:
+                reservations = self.resy_client.get_reservations()
+            except Exception as e:
+                if "different thread" in str(e):
+                    return {
+                        'success': False,
+                        'message': 'Viewing reservations is not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
+                    }
+                raise
 
             if reservations:
                 return {
@@ -509,6 +579,33 @@ IMPORTANT BEHAVIORS:
                 'success': False,
                 'error': f'Unknown tool: {tool_name}'
             }
+
+    def _browser_search_subprocess(self, method: str, args: dict) -> dict:
+        """Run a browser search in a subprocess to avoid Playwright threading issues.
+
+        Args:
+            method: 'search_venues' or 'search_by_cuisine'
+            args: Dict of arguments to pass to the method
+
+        Returns:
+            Dict with 'success' and 'results' or 'error'
+        """
+        try:
+            result = subprocess.run(
+                [sys.executable, _BROWSER_SEARCH_SCRIPT, method, json.dumps(args)],
+                capture_output=True, text=True, timeout=120
+            )
+            # stdout has only the JSON result (browser logs go to stderr)
+            stdout = result.stdout.strip()
+            if not stdout:
+                return {"success": False, "error": f"Browser search returned no output. stderr: {result.stderr[-300:] if result.stderr else '(empty)'}"}
+            return json.loads(stdout)
+        except subprocess.TimeoutExpired:
+            return {"success": False, "error": "Browser search timed out"}
+        except json.JSONDecodeError:
+            return {"success": False, "error": f"Failed to parse browser search output: {result.stdout[-200:] if result.stdout else result.stderr[-200:]}"}
+        except Exception as e:
+            return {"success": False, "error": f"Browser search subprocess failed: {e}"}
 
     def _save_reservation(self, result: dict, tool_input: dict) -> None:
         """Save a reservation to the database.
