@@ -25,6 +25,11 @@ _BROWSER_SEARCH_SCRIPT = os.path.join(
 )
 
 
+def _is_threading_error(e: Exception) -> bool:
+    """Check if exception is a Playwright greenlet threading error."""
+    return "different thread" in str(e)
+
+
 class ReservationAgent(BaseAgent):
     """Interactive agent for making restaurant reservations on Resy."""
 
@@ -293,21 +298,14 @@ IMPORTANT BEHAVIORS:
         logger.info("Executing: %s", tool_name)
 
         if tool_name == "search_resy_restaurants":
+            search_args = {"query": tool_input["query"], "location": tool_input.get("location")}
             try:
-                results = self.resy_client.search_venues(
-                    query=tool_input["query"],
-                    location=tool_input.get("location")
-                )
+                results = self.resy_client.search_venues(**search_args)
             except Exception as e:
-                if "different thread" in str(e):
-                    logger.info("Threading error, falling back to subprocess browser search")
-                    sub_result = self._browser_search_subprocess("search_venues", {
-                        "query": tool_input["query"],
-                        "location": tool_input.get("location")
-                    })
-                    results = sub_result.get("results", []) if sub_result.get("success") else []
-                    if not sub_result.get("success"):
-                        return {'success': False, 'message': sub_result.get('error', 'Browser search failed')}
+                if _is_threading_error(e):
+                    results = self._handle_threading_fallback("search_venues", search_args)
+                    if isinstance(results, dict):
+                        return results  # error response
                 else:
                     raise
 
@@ -348,27 +346,20 @@ IMPORTANT BEHAVIORS:
                     'message': 'Cuisine search requires browser mode. Set RESY_CLIENT_MODE=browser in .env'
                 }
 
+            cuisine_args = {
+                "cuisine": tool_input.get("cuisine"),
+                "neighborhood": tool_input.get("neighborhood"),
+                "location": tool_input.get("location", "ny"),
+                "date": tool_input.get("date"),
+                "party_size": tool_input.get("party_size", 2)
+            }
             try:
-                results = self.resy_client.search_by_cuisine(
-                    cuisine=tool_input.get("cuisine"),
-                    neighborhood=tool_input.get("neighborhood"),
-                    location=tool_input.get("location", "ny"),
-                    date=tool_input.get("date"),
-                    party_size=tool_input.get("party_size", 2)
-                )
+                results = self.resy_client.search_by_cuisine(**cuisine_args)
             except Exception as e:
-                if "different thread" in str(e):
-                    logger.info("Threading error, falling back to subprocess browser search")
-                    sub_result = self._browser_search_subprocess("search_by_cuisine", {
-                        "cuisine": tool_input.get("cuisine"),
-                        "neighborhood": tool_input.get("neighborhood"),
-                        "location": tool_input.get("location", "ny"),
-                        "date": tool_input.get("date"),
-                        "party_size": tool_input.get("party_size", 2)
-                    })
-                    results = sub_result.get("results", []) if sub_result.get("success") else []
-                    if not sub_result.get("success"):
-                        return {'success': False, 'message': sub_result.get('error', 'Browser search failed')}
+                if _is_threading_error(e):
+                    results = self._handle_threading_fallback("search_by_cuisine", cuisine_args)
+                    if isinstance(results, dict):
+                        return results  # error response
                 else:
                     raise
 
@@ -414,7 +405,7 @@ IMPORTANT BEHAVIORS:
                     party_size=tool_input["party_size"]
                 )
             except Exception as e:
-                if "different thread" in str(e):
+                if _is_threading_error(e):
                     return {
                         'success': False,
                         'message': 'Availability check is not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
@@ -452,7 +443,7 @@ IMPORTANT BEHAVIORS:
                     party_size=tool_input["party_size"]
                 )
             except Exception as e:
-                if "different thread" in str(e):
+                if _is_threading_error(e):
                     return {
                         'success': False,
                         'message': 'Reservations are not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
@@ -497,7 +488,7 @@ IMPORTANT BEHAVIORS:
                     time_text=time_text
                 )
             except Exception as e:
-                if "different thread" in str(e):
+                if _is_threading_error(e):
                     return {
                         'success': False,
                         'message': 'Conflict resolution is not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
@@ -513,7 +504,7 @@ IMPORTANT BEHAVIORS:
             try:
                 reservations = self.resy_client.get_reservations()
             except Exception as e:
-                if "different thread" in str(e):
+                if _is_threading_error(e):
                     return {
                         'success': False,
                         'message': 'Viewing reservations is not available in web UI mode with browser client. Set RESY_CLIENT_MODE=api in .env to use the web UI.'
@@ -606,6 +597,18 @@ IMPORTANT BEHAVIORS:
             return {"success": False, "error": f"Failed to parse browser search output: {result.stdout[-200:] if result.stdout else result.stderr[-200:]}"}
         except Exception as e:
             return {"success": False, "error": f"Browser search subprocess failed: {e}"}
+
+    def _handle_threading_fallback(self, method: str, args: dict):
+        """Handle Playwright threading error with subprocess fallback.
+
+        Returns:
+            list on success (search results), or dict on failure (error response)
+        """
+        logger.info("Threading error, falling back to subprocess browser search")
+        sub_result = self._browser_search_subprocess(method, args)
+        if sub_result.get("success"):
+            return sub_result.get("results", [])
+        return {'success': False, 'message': sub_result.get('error', 'Browser search failed')}
 
     def _save_reservation(self, result: dict, tool_input: dict) -> None:
         """Save a reservation to the database.

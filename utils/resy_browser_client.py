@@ -17,6 +17,11 @@ from utils.selectors import ResySelectors, SelectorHelper
 
 logger = logging.getLogger(__name__)
 
+
+def _is_threading_error(e: Exception) -> bool:
+    """Check if exception is a Playwright greenlet threading error."""
+    return "different thread" in str(e)
+
 # Location code mappings - short codes to full Resy location names
 LOCATION_CODES = {
     'ny': 'new-york-ny',
@@ -873,7 +878,7 @@ class ResyBrowserClient:
         except Exception as e:
             print(f"     ✗ Search failed: {e}")
             logger.error("Cuisine search failed: %s", e)
-            if "different thread" in str(e):
+            if _is_threading_error(e):
                 raise
             return []
 
@@ -957,7 +962,7 @@ class ResyBrowserClient:
 
         except Exception as e:
             print(f"    ✗ Venue lookup failed: {e}")
-            if "different thread" in str(e):
+            if _is_threading_error(e):
                 raise
             return None
 
@@ -1140,7 +1145,7 @@ class ResyBrowserClient:
 
         except Exception as e:
             print(f"    ✗ Availability check failed: {e}")
-            if "different thread" in str(e):
+            if _is_threading_error(e):
                 raise
             import traceback
             traceback.print_exc()
@@ -1633,7 +1638,7 @@ class ResyBrowserClient:
 
         except Exception as e:
             print(f"     ✗ Reservation failed: {e}")
-            if "different thread" in str(e):
+            if _is_threading_error(e):
                 raise
 
             self._screenshot('booking_error')
@@ -1881,7 +1886,7 @@ class ResyBrowserClient:
 
         except Exception as e:
             print(f"     ✗ Conflict resolution failed: {e}")
-            if "different thread" in str(e):
+            if _is_threading_error(e):
                 raise
             return {
                 'success': False,
