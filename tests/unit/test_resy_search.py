@@ -1202,3 +1202,137 @@ class TestWaitForInFrames:
 
         assert result is expected
         assert client._find_in_frames.call_count == 2
+
+
+class TestNeighborhoodMapPanIntegration:
+    """Test that search_by_cuisine calls _pan_map_to_neighborhood correctly."""
+
+    @patch('utils.resy_browser_client.time')
+    def test_calls_pan_map_for_neighborhood(self, mock_time):
+        """When neighborhood is specified, _pan_map_to_neighborhood should be called."""
+        mock_time.time.return_value = 0
+        mock_time.sleep = MagicMock()
+        client, _ = _make_browser_client()
+
+        client.page.goto = MagicMock()
+        client.page.wait_for_function = MagicMock()
+        client.page.locator = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        client._ensure_authenticated = MagicMock()
+        client._rate_limit = MagicMock()
+        client._add_human_behavior = MagicMock()
+        client._pan_map_to_neighborhood = MagicMock(return_value=True)
+
+        client.search_by_cuisine(cuisine='Italian', neighborhood='Upper East Side', location='ny')
+
+        client._pan_map_to_neighborhood.assert_called_once_with('Upper East Side', 'ny')
+
+    @patch('utils.resy_browser_client.time')
+    def test_no_pan_map_without_neighborhood(self, mock_time):
+        """Without neighborhood, _pan_map_to_neighborhood should NOT be called."""
+        mock_time.time.return_value = 0
+        mock_time.sleep = MagicMock()
+        client, _ = _make_browser_client()
+
+        client.page.goto = MagicMock()
+        client.page.wait_for_function = MagicMock()
+        client.page.locator = MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        client._ensure_authenticated = MagicMock()
+        client._rate_limit = MagicMock()
+        client._add_human_behavior = MagicMock()
+        client._pan_map_to_neighborhood = MagicMock()
+
+        client.search_by_cuisine(cuisine='Italian', location='ny')
+
+        client._pan_map_to_neighborhood.assert_not_called()
+
+
+class TestPanMapToNeighborhood:
+    """Test map panning for neighborhood-targeted search."""
+
+    def test_pan_map_uses_js_evaluate(self):
+        """Map should be panned via page.evaluate (Google Maps JS API)."""
+        client, _ = _make_browser_client()
+
+        mock_map = MagicMock()
+        mock_map.count.return_value = 1
+
+        # page.evaluate returns a strategy name when JS pan succeeds
+        client.page.evaluate = MagicMock(return_value='react_state')
+        mock_search_btn = MagicMock()
+
+        with patch('utils.resy_browser_client.SelectorHelper') as mock_helper:
+            mock_helper.find_element.side_effect = [
+                mock_map,        # MAP_CONTAINER
+                mock_search_btn, # SEARCH_HERE_BUTTON
+            ]
+            client.page.wait_for_function = MagicMock()
+
+            result = client._pan_map_to_neighborhood('Upper East Side')
+
+        assert result is True
+        # Verify JS evaluate was called with the pan script and UES coords
+        client.page.evaluate.assert_called_once()
+        call_args = client.page.evaluate.call_args
+        coords = call_args[0][1]  # second positional arg: [lat, lng]
+        assert 40.76 < coords[0] < 40.79  # UES latitude
+
+    def test_pan_map_falls_back_to_drag(self):
+        """When JS pan returns None, should fall back to mouse drag."""
+        client, _ = _make_browser_client()
+
+        mock_map = MagicMock()
+        mock_map.count.return_value = 1
+        mock_map.bounding_box.return_value = {
+            'x': 0, 'y': 0, 'width': 500, 'height': 300
+        }
+
+        # JS evaluate returns None (map instance not found)
+        client.page.evaluate = MagicMock(return_value=None)
+        mock_search_btn = MagicMock()
+
+        with patch('utils.resy_browser_client.SelectorHelper') as mock_helper:
+            mock_helper.find_element.side_effect = [mock_map, mock_search_btn]
+            client.page.wait_for_function = MagicMock()
+
+            result = client._pan_map_to_neighborhood('Williamsburg')
+
+        assert result is True
+        # Verify mouse drag fallback was used
+        client.page.mouse.down.assert_called_once()
+        client.page.mouse.up.assert_called_once()
+
+    def test_pan_map_clicks_search_here(self):
+        """'Search Here' button should be clicked after panning."""
+        client, _ = _make_browser_client()
+
+        mock_map = MagicMock()
+        mock_map.count.return_value = 1
+        client.page.evaluate = MagicMock(return_value='react_state')
+        mock_search_btn = MagicMock()
+
+        with patch('utils.resy_browser_client.SelectorHelper') as mock_helper:
+            mock_helper.find_element.side_effect = [mock_map, mock_search_btn]
+            client.page.wait_for_function = MagicMock()
+
+            client._pan_map_to_neighborhood('Williamsburg')
+
+        mock_search_btn.click.assert_called_once()
+
+    def test_pan_map_unknown_neighborhood_returns_false(self):
+        """Unknown neighborhood should return False without touching the map."""
+        client, _ = _make_browser_client()
+
+        result = client._pan_map_to_neighborhood('Narnia')
+        assert result is False
+
+    def test_pan_map_no_map_element_returns_false(self):
+        """If map element can't be found, should return False."""
+        client, _ = _make_browser_client()
+
+        with patch('utils.resy_browser_client.SelectorHelper') as mock_helper:
+            mock_helper.find_element.return_value = None
+
+            result = client._pan_map_to_neighborhood('SoHo')
+
+        assert result is False
+

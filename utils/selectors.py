@@ -68,6 +68,17 @@ class ResySelectors:
         ':has-text("already have a")',
     ]
 
+    # Map interaction (for neighborhood-targeted search)
+    # Resy uses Google Maps (not Mapbox) — .MapContainer is the React wrapper
+    MAP_CONTAINER = [
+        '.MapContainer', '.gm-style', '[class*="SearchMap"]',
+        '[class*="Map--container"]', '[id*="map" i]',
+    ]
+    SEARCH_HERE_BUTTON = [
+        'button:has-text("Search Here")', 'button:has-text("Search here")',
+        'button:has-text("Search this area")', '[class*="SearchHere"]',
+    ]
+
     # Search results page
     SEARCH_RESULT_CARD = [
         '[data-test-id="search-result"]',

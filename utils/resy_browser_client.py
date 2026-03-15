@@ -675,6 +675,164 @@ class ResyBrowserClient:
             print(f"       Example: 'temple-court' from resy.com/cities/ny/temple-court")
             return []
 
+    # JavaScript to find the Google Maps instance via React fiber tree
+    # and pan to the given coordinates. Resy uses Google Maps (not Mapbox).
+    _MAP_PAN_JS = """([lat, lng]) => {
+        const container = document.querySelector('.MapContainer');
+        if (!container) return null;
+
+        // Find React fiber key
+        const reactKey = Object.keys(container).find(
+            k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance')
+        );
+        if (!reactKey) return null;
+
+        // Walk up fiber tree to find the Google Maps instance in React state
+        let fiber = container[reactKey];
+        let depth = 0;
+        while (fiber && depth < 20) {
+            if (fiber.memoizedState) {
+                let state = fiber.memoizedState;
+                let sd = 0;
+                while (state && sd < 10) {
+                    // Check lastRenderedState (useState)
+                    if (state.queue && state.queue.lastRenderedState) {
+                        const s = state.queue.lastRenderedState;
+                        if (s && typeof s === 'object' && typeof s.panTo === 'function') {
+                            s.panTo({lat, lng});
+                            return 'react_state';
+                        }
+                    }
+                    // Check memoizedState directly (useRef / useMemo)
+                    const ms = state.memoizedState;
+                    if (ms && typeof ms === 'object') {
+                        if (typeof ms.panTo === 'function') {
+                            ms.panTo({lat, lng});
+                            return 'react_memo';
+                        }
+                        if (ms.current && typeof ms.current.panTo === 'function') {
+                            ms.current.panTo({lat, lng});
+                            return 'react_ref';
+                        }
+                    }
+                    state = state.next;
+                    sd++;
+                }
+            }
+            fiber = fiber.return;
+            depth++;
+        }
+        return null;
+    }"""
+
+    def _pan_map_to_neighborhood(self, neighborhood: str, location: str = 'ny') -> bool:
+        """Pan the Resy search map to a neighborhood and click 'Search Here'.
+
+        Uses Google Maps API via React fiber tree for reliable positioning.
+        Falls back to mouse drag if the JS approach fails.
+
+        Args:
+            neighborhood: Neighborhood name (e.g., 'Upper East Side')
+            location: City code (default: 'ny')
+
+        Returns:
+            True if map was panned and search refreshed, False otherwise
+        """
+        from utils.neighborhood_coords import get_neighborhood_coords
+
+        target = get_neighborhood_coords(neighborhood, location)
+        if not target:
+            print(f"     ⚠️  Unknown neighborhood '{neighborhood}', skipping map pan")
+            return False
+
+        # Confirm map element exists on page
+        map_elem = SelectorHelper.find_element(self.page, ResySelectors.MAP_CONTAINER, timeout=5000)
+        if not map_elem:
+            print(f"     ⚠️  Map element not found, skipping map pan")
+            return False
+
+        try:
+            lat, lng = target
+            print(f"     🗺️  Moving map to {neighborhood} ({lat:.4f}, {lng:.4f})...")
+
+            # Pan via Google Maps JS API (accessed through React fiber)
+            moved = self.page.evaluate(self._MAP_PAN_JS, [lat, lng])
+
+            if moved:
+                print(f"     ✓ Map moved via {moved}")
+                time.sleep(1)
+            else:
+                # Fallback: mouse drag
+                print(f"     ⚠️  Google Maps API not accessible, falling back to mouse drag")
+                self._pan_map_by_drag(map_elem, lat, lng)
+
+            # Wait for and click "Search Here" button
+            search_btn = SelectorHelper.find_element(
+                self.page, ResySelectors.SEARCH_HERE_BUTTON, timeout=3000
+            )
+            if search_btn:
+                search_btn.click()
+                print(f"     ✓ Clicked 'Search Here' button")
+                time.sleep(2)
+                try:
+                    self.page.wait_for_function(
+                        """() => {
+                            const links = document.querySelectorAll('a[href*="/venues/"]');
+                            return links.length > 0;
+                        }""",
+                        timeout=10000
+                    )
+                except Exception:
+                    pass
+                return True
+            else:
+                print(f"     ⚠️  'Search Here' button not found after moving map")
+                return False
+
+        except Exception as e:
+            logger.debug("Map pan failed: %s", e)
+            print(f"     ⚠️  Map pan failed: {e}")
+            return False
+
+    def _pan_map_by_drag(self, map_elem, target_lat: float, target_lng: float):
+        """Fallback: pan map via mouse drag when JS API isn't accessible.
+
+        Args:
+            map_elem: Playwright locator for the map element
+            target_lat: Target latitude
+            target_lng: Target longitude
+        """
+        from utils.neighborhood_coords import NYC_DEFAULT_CENTER
+
+        box = map_elem.bounding_box()
+        if not box:
+            return
+
+        center_x = box['x'] + box['width'] / 2
+        center_y = box['y'] + box['height'] / 2
+
+        # Approximate pixel offset — rough but better than nothing
+        pixels_per_degree = 2000
+        delta_lat = target_lat - NYC_DEFAULT_CENTER[0]
+        delta_lng = target_lng - NYC_DEFAULT_CENTER[1]
+        drag_x = delta_lng * pixels_per_degree
+        drag_y = -delta_lat * pixels_per_degree  # screen Y is inverted
+
+        steps = random.randint(5, 8)
+        self.page.mouse.move(center_x, center_y)
+        self.page.mouse.down()
+
+        for i in range(1, steps + 1):
+            frac = i / steps
+            self.page.mouse.move(
+                center_x - drag_x * frac,
+                center_y - drag_y * frac
+            )
+            time.sleep(random.uniform(0.05, 0.15))
+
+        self.page.mouse.up()
+        time.sleep(0.5)
+
     def search_by_cuisine(self, cuisine=None, neighborhood=None, location='ny',
                           date=None, party_size=2) -> List[Dict]:
         """
@@ -717,8 +875,8 @@ class ResyBrowserClient:
             if cuisine:
                 url += f"&facet=cuisine:{cuisine}"
             # Note: neighborhood facet removed — Resy's facet=neighborhood is unreliable
-            # (doesn't work for boroughs like Manhattan/Brooklyn). The neighborhood param
-            # is still accepted and logged for user context.
+            # (doesn't work for boroughs like Manhattan/Brooklyn). Neighborhood targeting
+            # is done via _pan_map_to_neighborhood after initial results load.
 
             print(f"     Navigating to: {url}")
             self.page.goto(url, wait_until='load', timeout=30000)
@@ -739,6 +897,10 @@ class ResyBrowserClient:
             except Exception as e:
                 print(f"     ⚠️  Timeout waiting for results: {e}")
                 # Continue anyway - may have partial results or none
+
+            # Pan Google Maps to the target neighborhood and reload results
+            if neighborhood:
+                self._pan_map_to_neighborhood(neighborhood, location)
 
             # Scrape venue cards from search results
             venues = []
