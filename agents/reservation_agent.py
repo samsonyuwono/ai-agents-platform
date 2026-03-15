@@ -16,6 +16,7 @@ from utils.resy_client import ResyClient
 from utils.reservation_store import ReservationStore
 from utils.email_sender import EmailSender
 from utils.slug_utils import parse_config_id, normalize_slug
+from utils.resy_browser_client import _is_threading_error
 from config.settings import Settings
 
 # Path to browser search subprocess helper
@@ -23,11 +24,6 @@ _BROWSER_SEARCH_SCRIPT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "scripts", "browser_search.py"
 )
-
-
-def _is_threading_error(e: Exception) -> bool:
-    """Check if exception is a Playwright greenlet threading error."""
-    return "different thread" in str(e)
 
 
 class ReservationAgent(BaseAgent):
@@ -406,7 +402,8 @@ IMPORTANT BEHAVIORS:
                 return {
                     'success': True,
                     'count': len(formatted),
-                    'restaurants': formatted
+                    'restaurants': formatted,
+                    'neighborhood_filter': tool_input.get("neighborhood"),
                 }
             else:
                 return {
