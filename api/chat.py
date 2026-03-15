@@ -8,7 +8,7 @@ import threading
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 
-from api.auth import require_auth
+from api.auth import require_auth, AuthUser
 from api.schemas import ChatRequest
 from api.session import session_manager
 
@@ -23,9 +23,15 @@ def _sse_event(event: str, data: dict) -> str:
 
 
 @router.post("")
-async def chat(body: ChatRequest, _user: str = Depends(require_auth)):
+async def chat(body: ChatRequest, user: AuthUser = Depends(require_auth)):
     """Run the agent and stream back SSE events in real time."""
-    session_id, agent = session_manager.get_or_create(body.session_id)
+    if user.resy_email is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Resy account not linked",
+        )
+
+    session_id, agent = session_manager.get_or_create(body.session_id, resy_email=user.resy_email)
 
     # asyncio.Queue bridges the agent thread → async generator
     event_queue: asyncio.Queue = asyncio.Queue()
@@ -71,14 +77,14 @@ async def chat(body: ChatRequest, _user: str = Depends(require_auth)):
 
 
 @router.get("/history/{session_id}")
-def get_history(session_id: str, _user: str = Depends(require_auth)):
+def get_history(session_id: str, _user: AuthUser = Depends(require_auth)):
     """Return conversation history for a session."""
     history = session_manager.get_history(session_id)
     return {"session_id": session_id, "history": history}
 
 
 @router.delete("/session/{session_id}")
-def delete_session(session_id: str, _user: str = Depends(require_auth)):
+def delete_session(session_id: str, _user: AuthUser = Depends(require_auth)):
     """Delete a session and its agent."""
     deleted = session_manager.delete(session_id)
     if not deleted:

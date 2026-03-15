@@ -107,6 +107,8 @@ class TestMakeRequestAutoRefresh:
 
     def test_401_triggers_refresh_and_retry(self):
         client, mock_settings = _make_client()
+        client._user_email = 'test@example.com'
+        client._user_password = 'password123'
 
         # First response: 401, second (after refresh): 200
         resp_401 = MagicMock()

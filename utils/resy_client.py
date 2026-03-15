@@ -46,8 +46,8 @@ class ResyClient:
         """Get fresh auth token via Resy's password auth endpoint.
 
         Args:
-            email: Resy account email (defaults to Settings.RESY_EMAIL)
-            password: Resy account password (defaults to Settings.RESY_PASSWORD)
+            email: Resy account email (defaults to instance _user_email, then Settings.RESY_EMAIL)
+            password: Resy account password (defaults to instance _user_password, then Settings.RESY_PASSWORD)
 
         Returns:
             Auth token string
@@ -55,8 +55,8 @@ class ResyClient:
         Raises:
             Exception: If authentication fails
         """
-        email = email or Settings.RESY_EMAIL
-        password = password or Settings.RESY_PASSWORD
+        email = email or getattr(self, '_user_email', None) or Settings.RESY_EMAIL
+        password = password or getattr(self, '_user_password', None) or Settings.RESY_PASSWORD
 
         if not email or not password:
             raise ValueError("Email and password required for token refresh")

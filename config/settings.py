@@ -23,6 +23,7 @@ class Settings:
     EMAIL_TO = os.environ.get("EMAIL_TO")
 
     # Resy Configuration
+    RESY_PUBLIC_API_KEY = "VbWk7s3L4KiK5fhVUbDlUvtIolAdhoYL"
     RESY_API_KEY = os.environ.get("RESY_API_KEY")
     RESY_AUTH_TOKEN = os.environ.get("RESY_AUTH_TOKEN")
     RESY_PAYMENT_METHOD_ID = os.environ.get("RESY_PAYMENT_METHOD_ID")
