@@ -88,3 +88,54 @@ class TestAuthEndpoints:
 
         assert resp.status_code == 401
         assert resp.json()["detail"] == "Token expired"
+
+    @patch('api.auth.Settings')
+    def test_token_with_resy_email(self, mock_settings, _validate):
+        """Test that JWT with resy_email claim is decoded correctly."""
+        mock_settings.WEB_JWT_SECRET = "test-jwt-secret"
+
+        from api.auth import _create_token, AuthUser
+        import jwt as pyjwt
+
+        token = _create_token(resy_email="user@resy.com")
+        payload = pyjwt.decode(token, "test-jwt-secret", algorithms=["HS256"])
+
+        assert payload["resy_email"] == "user@resy.com"
+        assert payload["sub"] == "user"
+
+    @patch('api.auth.Settings')
+    def test_token_without_resy_email(self, mock_settings, _validate):
+        """Test that JWT without resy_email has no resy_email claim."""
+        mock_settings.WEB_JWT_SECRET = "test-jwt-secret"
+
+        from api.auth import _create_token
+        import jwt as pyjwt
+
+        token = _create_token()
+        payload = pyjwt.decode(token, "test-jwt-secret", algorithms=["HS256"])
+
+        assert "resy_email" not in payload
+
+    @patch('api.auth.Settings')
+    def test_require_auth_returns_auth_user(self, mock_settings, _validate):
+        """Test that require_auth returns AuthUser with resy_email."""
+        mock_settings.WEB_JWT_SECRET = "test-jwt-secret"
+
+        from api.auth import require_auth, AuthUser
+        from unittest.mock import MagicMock
+
+        payload = {
+            "sub": "user",
+            "resy_email": "test@resy.com",
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 3600,
+        }
+        token = jwt.encode(payload, "test-jwt-secret", algorithm="HS256")
+        creds = MagicMock()
+        creds.credentials = token
+
+        result = require_auth(creds)
+
+        assert isinstance(result, AuthUser)
+        assert result.sub == "user"
+        assert result.resy_email == "test@resy.com"

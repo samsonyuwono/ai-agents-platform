@@ -15,3 +15,19 @@ class LoginResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
+
+
+class ResyLinkRequest(BaseModel):
+    email: str
+    password: str
+
+
+class ResyLinkResponse(BaseModel):
+    success: bool
+    token: str
+    resy_email: str
+
+
+class ResyStatusResponse(BaseModel):
+    linked: bool
+    resy_email: Optional[str] = None

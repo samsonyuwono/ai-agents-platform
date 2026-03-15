@@ -33,21 +33,38 @@ def _is_threading_error(e: Exception) -> bool:
 class ReservationAgent(BaseAgent):
     """Interactive agent for making restaurant reservations on Resy."""
 
-    def __init__(self):
-        """Initialize the reservation agent."""
+    def __init__(self, resy_client=None, resy_credentials=None):
+        """Initialize the reservation agent.
+
+        Args:
+            resy_client: Optional pre-configured ResyClient (e.g. per-user from web API).
+                         If None, falls back to factory + .env credentials.
+            resy_credentials: Optional dict with email, password, auth_token for
+                              deferred client creation (avoids Playwright threading issues).
+                              Client is created fresh in each run() call's thread.
+        """
         super().__init__()
 
-        # Check if Resy is configured (API or browser mode)
-        if not Settings.has_resy_configured() and not Settings.has_resy_browser_configured():
-            raise ValueError(
-                "Resy not configured. Please add to .env file:\n"
-                "  For API mode: RESY_API_KEY + RESY_AUTH_TOKEN\n"
-                "  For Browser mode: RESY_EMAIL + RESY_PASSWORD"
-            )
+        self._resy_credentials = resy_credentials
 
-        # Use factory to select between API and browser clients
-        from utils.resy_client_factory import ResyClientFactory
-        self.resy_client = ResyClientFactory.create_client()
+        if resy_client is not None:
+            self.resy_client = resy_client
+        elif resy_credentials is not None:
+            # Client will be created in run() to avoid Playwright threading issues
+            self.resy_client = None
+        else:
+            # Check if Resy is configured (API or browser mode)
+            if not Settings.has_resy_configured() and not Settings.has_resy_browser_configured():
+                raise ValueError(
+                    "Resy not configured. Please add to .env file:\n"
+                    "  For API mode: RESY_API_KEY + RESY_AUTH_TOKEN\n"
+                    "  For Browser mode: RESY_EMAIL + RESY_PASSWORD"
+                )
+
+            # Use factory to select between API and browser clients
+            from utils.resy_client_factory import ResyClientFactory
+            self.resy_client = ResyClientFactory.create_client()
+
         self.store = ReservationStore()
 
         # Email sender for confirmations (optional)
@@ -754,6 +771,13 @@ Your reservation has been successfully booked.
             Final response from the agent
         """
         logger.info("Reservation Agent processing request")
+
+        # Create a fresh browser client in this thread if using deferred credentials.
+        # This avoids Playwright threading errors since each run() executes in
+        # its own daemon thread (SSE streaming), and Playwright is thread-bound.
+        if self._resy_credentials:
+            from api.session import _create_client_for_user
+            self.resy_client = _create_client_for_user(**self._resy_credentials)
 
         def emit(event_type, data=None):
             if event_callback:

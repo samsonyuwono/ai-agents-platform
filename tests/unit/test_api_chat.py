@@ -9,9 +9,12 @@ from unittest.mock import MagicMock, patch
 from fastapi.testclient import TestClient
 
 
-def _make_token(secret="test-jwt-secret"):
+def _make_token(secret="test-jwt-secret", resy_email="user@resy.com"):
+    """Create a JWT with optional resy_email claim."""
     import time
     payload = {"sub": "user", "iat": int(time.time()), "exp": int(time.time()) + 3600}
+    if resy_email:
+        payload["resy_email"] = resy_email
     return jwt.encode(payload, secret, algorithm="HS256")
 
 
@@ -97,9 +100,9 @@ class TestChatEndpoint:
 
     @patch('api.chat.session_manager')
     @patch('api.auth.Settings')
-    def test_chat_passes_session_id(self, mock_auth_settings, mock_session_mgr, _validate):
+    def test_chat_passes_session_id_and_resy_email(self, mock_auth_settings, mock_session_mgr, _validate):
         mock_auth_settings.WEB_JWT_SECRET = "test-jwt-secret"
-        token = _make_token()
+        token = _make_token(resy_email="me@resy.com")
 
         mock_agent = MagicMock()
         def fake_run(message, event_callback=None):
@@ -117,7 +120,23 @@ class TestChatEndpoint:
         )
 
         assert resp.status_code == 200
-        mock_session_mgr.get_or_create.assert_called_with("existing-session")
+        mock_session_mgr.get_or_create.assert_called_with("existing-session", resy_email="me@resy.com")
+
+    @patch('api.auth.Settings')
+    def test_chat_without_resy_linked_returns_403(self, mock_auth_settings, _validate):
+        """Chat endpoint returns 403 if JWT has no resy_email."""
+        mock_auth_settings.WEB_JWT_SECRET = "test-jwt-secret"
+        token = _make_token(resy_email=None)
+
+        client = self._get_client()
+        resp = client.post(
+            "/api/chat",
+            json={"message": "hello"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert resp.status_code == 403
+        assert "not linked" in resp.json()["detail"]
 
 
 @patch('config.settings.Settings.validate', return_value=True)
