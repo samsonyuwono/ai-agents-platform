@@ -353,13 +353,6 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "search_resy_by_cuisine":
-            # Check if browser client is available (has search_by_cuisine method)
-            if not hasattr(self.resy_client, 'search_by_cuisine'):
-                return {
-                    'success': False,
-                    'message': 'Cuisine search requires browser mode. Set RESY_CLIENT_MODE=browser in .env'
-                }
-
             cuisine_args = {
                 "cuisine": tool_input.get("cuisine"),
                 "neighborhood": tool_input.get("neighborhood"),
@@ -367,16 +360,24 @@ IMPORTANT BEHAVIORS:
                 "date": tool_input.get("date"),
                 "party_size": tool_input.get("party_size", 2)
             }
-            try:
-                results = self.resy_client.search_by_cuisine(**cuisine_args)
-            except Exception as e:
-                if _is_threading_error(e):
-                    fallback = self._handle_threading_fallback("search_by_cuisine", cuisine_args)
-                    if not fallback.get("success"):
-                        return fallback
-                    results = fallback.get("results", [])
-                else:
-                    raise
+
+            # If current client doesn't support cuisine search, use browser subprocess
+            if not hasattr(self.resy_client, 'search_by_cuisine'):
+                fallback = self._handle_threading_fallback("search_by_cuisine", cuisine_args)
+                if not fallback.get("success"):
+                    return fallback
+                results = fallback.get("results", [])
+            else:
+                try:
+                    results = self.resy_client.search_by_cuisine(**cuisine_args)
+                except Exception as e:
+                    if _is_threading_error(e):
+                        fallback = self._handle_threading_fallback("search_by_cuisine", cuisine_args)
+                        if not fallback.get("success"):
+                            return fallback
+                        results = fallback.get("results", [])
+                    else:
+                        raise
 
             if results:
                 formatted = []

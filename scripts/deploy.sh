@@ -83,7 +83,9 @@ echo ""
 echo "--- Configuring Caddy for $DEPLOY_DOMAIN ---"
 ssh "$SNIPER_REMOTE_HOST" "cat > /etc/caddy/Caddyfile <<EOF
 $DEPLOY_DOMAIN {
-    reverse_proxy localhost:8000
+    reverse_proxy localhost:8000 {
+        flush_interval -1
+    }
 }
 EOF
 "
