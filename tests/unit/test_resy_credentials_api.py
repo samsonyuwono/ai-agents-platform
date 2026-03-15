@@ -37,8 +37,10 @@ class TestResyLink:
         mock_client.refresh_auth_token.return_value = "resy-tok-123"
         mock_resy_cls.return_value = mock_client
 
-        # Mock credential store
+        # Mock credential store (context manager returns itself)
         mock_store = MagicMock()
+        mock_store.__enter__ = MagicMock(return_value=mock_store)
+        mock_store.__exit__ = MagicMock(return_value=False)
         mock_get_store.return_value = mock_store
 
         client = self._get_client()
@@ -100,6 +102,8 @@ class TestResyStatus:
         token = _make_token(resy_email="user@resy.com")
 
         mock_store = MagicMock()
+        mock_store.__enter__ = MagicMock(return_value=mock_store)
+        mock_store.__exit__ = MagicMock(return_value=False)
         mock_store.has_credentials.return_value = True
         mock_get_store.return_value = mock_store
 
@@ -147,6 +151,8 @@ class TestResyUnlink:
         token = _make_token(resy_email="user@resy.com")
 
         mock_store = MagicMock()
+        mock_store.__enter__ = MagicMock(return_value=mock_store)
+        mock_store.__exit__ = MagicMock(return_value=False)
         mock_get_store.return_value = mock_store
 
         client = self._get_client()

@@ -24,8 +24,7 @@ def _create_client_for_user(email: str, password: str, auth_token: Optional[str]
 
     if mode == 'browser' or (mode == 'auto' and Settings.has_resy_browser_configured()):
         from utils.resy_browser_client import ResyBrowserClient
-        client = ResyBrowserClient(email=email, password=password)
-        return client
+        return ResyBrowserClient(email=email, password=password)
 
     # API mode
     from utils.resy_client import ResyClient
@@ -47,11 +46,8 @@ def _create_agent_for_user(resy_email: str) -> ReservationAgent:
     """
     from utils.credential_store import CredentialStore
 
-    store = CredentialStore()
-    try:
+    with CredentialStore() as store:
         creds = store.get_credentials(resy_email)
-    finally:
-        store.close()
 
     if not creds:
         raise ValueError(f"No credentials found for {resy_email}")

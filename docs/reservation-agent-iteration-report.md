@@ -50,8 +50,8 @@ The reservation agent MVP is a conversational AI assistant that handles restaura
 
 - Multi-platform support (OpenTable, Tock) — stubs exist but no implementation
 - Neighborhood-based browsing — Resy's facet filters are unreliable
-- Web/mobile UI — agent is CLI-only via Claude conversation
-- Multi-user support — single user, single credential set
+- ~~Web/mobile UI~~ — Shipped (reservation-ui React frontend with SSE streaming)
+- ~~Multi-user support~~ — Shipped in Iteration 14 (per-user Resy credential linking)
 - Automatic drop-time detection — user must know when slots release
 
 ---
@@ -213,6 +213,25 @@ However, the VPS works perfectly for API-mode bookings. Delmonicos (job #36) boo
 
 **Lesson:** Know when to stop. We tried stealth hardening, proxy routing, and session export — each was a reasonable hypothesis, each solved a piece of the puzzle, and none solved the full problem. The constraint isn't temporary or fixable with more code. A datacenter VM will never look like a real user's laptop to a sophisticated fingerprinting system. Recognizing this saved us from an infinite iteration loop.
 
+### Iteration 14: Per-User Resy Credential Linking
+
+**Problem discovered:** The system used a single Resy credential from the `.env` file. Every web UI user made reservations through the same Resy account — fine for a single user, but a hard blocker for multi-user support.
+
+**What we built:**
+- **Encrypted credential storage** — When a user links their Resy account via the web UI, their credentials are encrypted with Fernet (symmetric encryption) and stored server-side, keyed to their JWT identity. No plaintext passwords at rest.
+- **JWT-based credential routing** — The user's Resy email is embedded as a claim in their JWT. When the agent processes a chat request, it retrieves the corresponding encrypted credentials and uses them for that user's Resy API calls. Different users get different Resy sessions.
+- **Three new API endpoints:**
+  - `POST /api/resy/link` — Validates Resy credentials (real login attempt), encrypts and stores them, returns a new JWT with the Resy email claim
+  - `GET /api/resy/status` — Returns whether the current user has linked Resy credentials
+  - `DELETE /api/resy/unlink` — Removes stored credentials, returns a new JWT without the Resy claim
+- **Graceful degradation** — If no per-user credentials exist, the system falls back to the global `.env` credentials. Existing single-user setups continue to work without any configuration change.
+
+**Key decision — Fernet encryption over hashing:** Credentials need to be recoverable (the agent must send them to Resy's API). Fernet provides authenticated encryption with a single key (`CREDENTIAL_ENCRYPTION_KEY` in `.env`). The tradeoff is that anyone with access to the encryption key and the stored credentials can decrypt them — acceptable for a self-hosted system where the operator controls the server.
+
+**Key decision — JWT claims over database lookups:** Embedding the Resy email in the JWT means the API can route to the correct credentials without a database lookup on every request. The JWT is re-issued when credentials change (link/unlink), keeping it in sync.
+
+**Outcome:** Multi-user Resy support working end-to-end. Each user links their own Resy account, and the agent uses the correct credentials per session. Paired with frontend changes in reservation-ui (Iteration 5) for the full linking flow.
+
 ---
 
 ## Results
@@ -220,7 +239,7 @@ However, the VPS works perfectly for API-mode bookings. Delmonicos (job #36) boo
 | Metric | Value |
 |--------|-------|
 | Development timeline | 2 weeks (Feb 21 – Mar 8, 2026) |
-| Iterations | 13 phases across 27 incremental changes |
+| Iterations | 14 phases across 28 incremental changes |
 | Automated tests | 264 (including 90+ for sniper and browser client) |
 | Successful bookings | 20+ confirmed reservations |
 | Restaurants booked | Le Gratin, Delmonicos, Temple Court, Rezdora, Bowery Meat Company, Cuerno, Pepolino |

@@ -38,11 +38,8 @@ def link_resy(
         )
 
     # Store encrypted credentials
-    store = _get_credential_store()
-    try:
+    with _get_credential_store() as store:
         store.save_credentials(body.email, body.password, auth_token=auth_token)
-    finally:
-        store.close()
 
     # Re-issue JWT with resy_email claim
     new_token = _create_token(resy_email=body.email)
@@ -56,26 +53,18 @@ def resy_status(user: AuthUser = Depends(require_auth)):
     if not user.resy_email:
         return ResyStatusResponse(linked=False)
 
-    store = _get_credential_store()
-    try:
+    with _get_credential_store() as store:
         linked = store.has_credentials(user.resy_email)
-    finally:
-        store.close()
 
-    if linked:
-        return ResyStatusResponse(linked=True, resy_email=user.resy_email)
-    return ResyStatusResponse(linked=False)
+    return ResyStatusResponse(linked=linked, resy_email=user.resy_email if linked else None)
 
 
 @router.delete("/unlink")
 def unlink_resy(user: AuthUser = Depends(require_auth)):
     """Delete stored Resy credentials and re-issue JWT without resy_email."""
     if user.resy_email:
-        store = _get_credential_store()
-        try:
+        with _get_credential_store() as store:
             store.delete_credentials(user.resy_email)
-        finally:
-            store.close()
 
     new_token = _create_token()  # No resy_email
     return {"success": True, "token": new_token}
