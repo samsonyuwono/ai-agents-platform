@@ -722,7 +722,7 @@ class TestHelperMethods:
         assert result['results'] == []
         mock_manager.send_command.assert_called_once_with(
             method='search_venues', args={'query': 'test'},
-            timeout=120, resy_credentials=None,
+            timeout=180, resy_credentials=None,
         )
 
     @patch('agents.reservation_agent.BrowserWorkerManager')

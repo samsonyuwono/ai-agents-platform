@@ -605,7 +605,7 @@ IMPORTANT BEHAVIORS:
         return manager.send_command(
             method=method,
             args=args,
-            timeout=120,
+            timeout=180,
             resy_credentials=self._resy_credentials,
         )
 

@@ -135,6 +135,12 @@ def main():
         # Launch browser and authenticate
         client._launch_browser()
         client._ensure_authenticated()
+
+        # Persist session to disk so one-shot fallback can reuse it
+        try:
+            client._save_session()
+        except Exception:
+            pass
     except Exception as e:
         output_json({"status": "error", "error": f"Startup failed: {e}"})
         sys.exit(1)
