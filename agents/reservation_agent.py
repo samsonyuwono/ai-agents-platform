@@ -6,8 +6,6 @@ Interactive agent for making restaurant reservations via Resy.
 import json
 import logging
 import os
-import subprocess
-import sys
 from datetime import datetime
 from agents.base_agent import BaseAgent
 
@@ -17,9 +15,10 @@ from utils.reservation_store import ReservationStore
 from utils.email_sender import EmailSender
 from utils.slug_utils import parse_config_id, normalize_slug
 from utils.resy_browser_client import _is_threading_error
+from utils.browser_worker_manager import BrowserWorkerManager
 from config.settings import Settings
 
-# Path to browser search subprocess helper
+# Path to browser search subprocess helper (used by one-shot fallback)
 _BROWSER_SEARCH_SCRIPT = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "scripts", "browser_search.py"
@@ -590,31 +589,25 @@ IMPORTANT BEHAVIORS:
             }
 
     def _browser_search_subprocess(self, method: str, args: dict) -> dict:
-        """Run a browser search in a subprocess to avoid Playwright threading issues.
+        """Run a browser operation via the persistent worker (or one-shot fallback).
+
+        Routes through BrowserWorkerManager which keeps Chromium warm.
+        Falls back to one-shot subprocess if the worker is unavailable.
 
         Args:
-            method: 'search_venues' or 'search_by_cuisine'
+            method: Method name (e.g. 'search_venues', 'search_by_cuisine')
             args: Dict of arguments to pass to the method
 
         Returns:
             Dict with 'success' and 'results' or 'error'
         """
-        try:
-            result = subprocess.run(
-                [sys.executable, _BROWSER_SEARCH_SCRIPT, method, json.dumps(args)],
-                capture_output=True, text=True, timeout=120
-            )
-            # stdout has only the JSON result (browser logs go to stderr)
-            stdout = result.stdout.strip()
-            if not stdout:
-                return {"success": False, "error": f"Browser search returned no output. stderr: {result.stderr[-300:] if result.stderr else '(empty)'}"}
-            return json.loads(stdout)
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Browser search timed out"}
-        except json.JSONDecodeError:
-            return {"success": False, "error": f"Failed to parse browser search output: {result.stdout[-200:] if result.stdout else result.stderr[-200:]}"}
-        except Exception as e:
-            return {"success": False, "error": f"Browser search subprocess failed: {e}"}
+        manager = BrowserWorkerManager.get_instance()
+        return manager.send_command(
+            method=method,
+            args=args,
+            timeout=120,
+            resy_credentials=self._resy_credentials,
+        )
 
     def _handle_threading_fallback(self, method: str, args: dict) -> dict:
         """Handle Playwright threading error with subprocess fallback.

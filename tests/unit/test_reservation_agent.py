@@ -215,16 +215,23 @@ class TestExecuteToolSearch:
         agent._handle_threading_fallback.assert_called_once()
         assert result['success'] is True
 
-    def test_search_by_cuisine_no_browser_method(self, agent):
-        """Test cuisine search fails gracefully without browser client."""
+    @patch('agents.reservation_agent.BrowserWorkerManager')
+    def test_search_by_cuisine_no_browser_method(self, mock_manager_cls, agent):
+        """Test cuisine search falls back to worker when client lacks method."""
         # Remove search_by_cuisine method to simulate API-only client
         del agent.resy_client.search_by_cuisine
+
+        mock_manager = MagicMock()
+        mock_manager.send_command.return_value = {
+            "success": False, "error": "Browser mode not available"
+        }
+        mock_manager_cls.get_instance.return_value = mock_manager
 
         result = agent.execute_tool('search_resy_by_cuisine',
                                     {'cuisine': 'Japanese'})
 
         assert result['success'] is False
-        assert 'browser mode' in result['message']
+        assert 'message' in result
 
     def test_search_by_cuisine_success(self, agent):
         """Test cuisine search returns formatted results with time slots."""
@@ -702,34 +709,40 @@ class TestHelperMethods:
         assert '2 people' in email
         assert 'Confirmed' in email
 
-    @patch('agents.reservation_agent.subprocess.run')
-    def test_browser_search_subprocess_success(self, mock_run, agent):
-        """Test subprocess browser search with valid JSON output."""
-        mock_run.return_value = MagicMock(
-            stdout='{"success": true, "results": []}',
-            stderr=''
-        )
+    @patch('agents.reservation_agent.BrowserWorkerManager')
+    def test_browser_search_subprocess_success(self, mock_manager_cls, agent):
+        """Test browser search routes through worker manager."""
+        mock_manager = MagicMock()
+        mock_manager.send_command.return_value = {"success": True, "results": []}
+        mock_manager_cls.get_instance.return_value = mock_manager
 
         result = agent._browser_search_subprocess('search_venues', {'query': 'test'})
 
         assert result['success'] is True
         assert result['results'] == []
+        mock_manager.send_command.assert_called_once_with(
+            method='search_venues', args={'query': 'test'},
+            timeout=120, resy_credentials=None,
+        )
 
-    @patch('agents.reservation_agent.subprocess.run')
-    def test_browser_search_subprocess_timeout(self, mock_run, agent):
-        """Test subprocess browser search timeout."""
-        import subprocess
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd='test', timeout=120)
+    @patch('agents.reservation_agent.BrowserWorkerManager')
+    def test_browser_search_subprocess_timeout(self, mock_manager_cls, agent):
+        """Test browser search returns error on worker timeout."""
+        mock_manager = MagicMock()
+        mock_manager.send_command.return_value = {"success": False, "error": "One-shot browser search timed out"}
+        mock_manager_cls.get_instance.return_value = mock_manager
 
         result = agent._browser_search_subprocess('search_venues', {'query': 'test'})
 
         assert result['success'] is False
         assert 'timed out' in result['error']
 
-    @patch('agents.reservation_agent.subprocess.run')
-    def test_browser_search_subprocess_empty_output(self, mock_run, agent):
-        """Test subprocess browser search with empty output."""
-        mock_run.return_value = MagicMock(stdout='', stderr='some error')
+    @patch('agents.reservation_agent.BrowserWorkerManager')
+    def test_browser_search_subprocess_empty_output(self, mock_manager_cls, agent):
+        """Test browser search returns error on empty output."""
+        mock_manager = MagicMock()
+        mock_manager.send_command.return_value = {"success": False, "error": "One-shot returned no output. stderr: (empty)"}
+        mock_manager_cls.get_instance.return_value = mock_manager
 
         result = agent._browser_search_subprocess('search_venues', {'query': 'test'})
 

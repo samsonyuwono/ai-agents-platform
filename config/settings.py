@@ -41,6 +41,10 @@ class Settings:
     RESY_RATE_LIMIT_JITTER_MAX = float(os.environ.get("RESY_RATE_LIMIT_JITTER_MAX", "1.5"))
     RESY_BROWSER_TIMEOUT_MS = int(os.environ.get("RESY_BROWSER_TIMEOUT_MS", "30000"))
 
+    # Browser Worker (persistent Chromium process)
+    RESY_BROWSER_WORKER_IDLE_TIMEOUT = int(os.environ.get("RESY_BROWSER_WORKER_IDLE_TIMEOUT", "600"))
+    RESY_BROWSER_WORKER_STARTUP_TIMEOUT = int(os.environ.get("RESY_BROWSER_WORKER_STARTUP_TIMEOUT", "180"))
+
     # Residential proxy (optional — routes browser traffic through residential IP)
     RESY_PROXY_SERVER = os.environ.get("RESY_PROXY_SERVER")  # e.g., "http://brd.superproxy.io:22225"
     RESY_PROXY_USERNAME = os.environ.get("RESY_PROXY_USERNAME")
