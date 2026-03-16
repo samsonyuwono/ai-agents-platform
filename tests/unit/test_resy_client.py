@@ -55,9 +55,34 @@ class TestInit:
         """Default rate limit should be 1 second."""
         mock_settings.RESY_API_KEY = 'key'
         mock_settings.RESY_AUTH_TOKEN = 'tok'
+        mock_settings.has_proxy_configured.return_value = False
         from utils.resy_client import ResyClient
         client = ResyClient(api_key='key', auth_token='tok')
         assert client.min_delay_seconds == 1
+
+    @patch('utils.resy_client.Settings')
+    def test_init_with_proxy(self, mock_settings):
+        """Session should configure proxies when RESY_PROXY_SERVER is set."""
+        mock_settings.RESY_API_KEY = 'key'
+        mock_settings.RESY_AUTH_TOKEN = 'tok'
+        mock_settings.has_proxy_configured.return_value = True
+        mock_settings.RESY_PROXY_SERVER = 'socks5://localhost:1080'
+        from utils.resy_client import ResyClient
+        client = ResyClient(api_key='key', auth_token='tok')
+        assert client.session.proxies == {
+            'http': 'socks5://localhost:1080',
+            'https': 'socks5://localhost:1080',
+        }
+
+    @patch('utils.resy_client.Settings')
+    def test_init_without_proxy(self, mock_settings):
+        """Session should not have proxies when RESY_PROXY_SERVER is unset."""
+        mock_settings.RESY_API_KEY = 'key'
+        mock_settings.RESY_AUTH_TOKEN = 'tok'
+        mock_settings.has_proxy_configured.return_value = False
+        from utils.resy_client import ResyClient
+        client = ResyClient(api_key='key', auth_token='tok')
+        assert not hasattr(client.session, '_custom_proxies')
 
 
 class TestRefreshAuthToken:

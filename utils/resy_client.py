@@ -42,6 +42,16 @@ class ResyClient:
             'Referer': 'https://resy.com/',
         })
 
+        # Route through SOCKS proxy when configured (e.g., SSH tunnel)
+        if Settings.has_proxy_configured():
+            # Use socks5h:// for requests (remote DNS) even if env says socks5://
+            proxy_url = Settings.RESY_PROXY_SERVER.replace('socks5://', 'socks5h://')
+            self.session.proxies = {
+                'http': proxy_url,
+                'https': proxy_url,
+            }
+            logger.info("Using proxy: %s", proxy_url)
+
     def refresh_auth_token(self, email: str = None, password: str = None) -> str:
         """Get fresh auth token via Resy's password auth endpoint.
 

@@ -4,12 +4,10 @@
 
 - [ ] **Resy location tracking** — Track and store the city/location code (ny, sf, la) associated with each venue lookup, reservation, and sniper job so results are location-aware across the platform.
 - [ ] **Email confirmation format** — Improve the reservation confirmation email template with better formatting, restaurant details (name, address, time), and consistent branding. (`agents/reservation_agent.py:_format_confirmation_email`, `utils/email_sender.py`)
-- [x] **Neighborhood-based restaurant lookup** — Add ability to search/browse Resy restaurants by neighborhood (e.g., "West Village", "SoHo"). Use Resy's location/neighborhood filters in both API and browser clients, and expose as a ReservationAgent tool. (`utils/resy_client.py`, `utils/resy_browser_client.py`, `agents/reservation_agent.py`)
 - [ ] **Like/favorite restaurants** — Allow users to save restaurants to a favorites list. Store liked venues per user in SQLite (venue ID, slug, name, location). Expose as a ReservationAgent tool (`like_restaurant`, `unlike_restaurant`, `list_favorites`) and add a heart/like button to the reservation-ui AvailabilityCard and ReservationCard components. (`utils/reservation_store.py`, `agents/reservation_agent.py`, `reservation-ui/src/components/`)
 
 ## Medium Priority
 
-- [ ] **Add resy_browser_client tests** — ~1800 lines with zero unit tests. At minimum, test the parsing/extraction logic separately from Playwright calls. (`utils/resy_browser_client.py`)
 - [ ] **Document remote sniper deployment** — `SNIPER_REMOTE_HOST` setup, SSH keys, systemd service installation, and monitoring. No docs exist beyond the deploy script itself. (`scripts/deploy_sniper.sh`, `deploy/sniper.service`)
 - [ ] **Clean up bare exceptions in browser client** — 22+ bare `except:` clauses. CLAUDE.md discourages this for new code. Gradually replace with specific exception types where feasible. (`utils/resy_browser_client.py`)
 - [ ] **Add log rotation** — Cron jobs write to `logs/` with no rotation. Add logrotate config or size-based rotation.
@@ -27,3 +25,4 @@
 - [x] **Add ResyClient unit tests** — 13 tests covering init, token refresh, 401 auto-retry, slug resolution, conflict resolution. (`tests/unit/test_resy_client.py`)
 - [x] **Deploy API-mode sniper to VPS** — Memory dropped from 393MB to 18MB, no Chromium dependency.
 - [x] **Add ReservationAgent unit tests** — Complex tool execution logic (9 tool handlers) has zero test coverage. Test each handler: search, availability, booking, conflict resolution, sniper scheduling, view jobs.
+- [x] **Neighborhood-based restaurant lookup** — Add ability to search/browse Resy restaurants by neighborhood (e.g., "West Village", "SoHo"). Use Resy's location/neighborhood filters in both API and browser clients, and expose as a ReservationAgent tool. (`utils/resy_client.py`, `utils/resy_browser_client.py`, `agents/reservation_agent.py`)

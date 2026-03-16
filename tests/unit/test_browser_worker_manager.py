@@ -92,7 +92,7 @@ class TestSendCommand:
     def test_send_command_worker_startup_fails_falls_back(self, mock_settings, mock_popen):
         """If worker fails to start, falls back to one-shot."""
         mock_settings.RESY_BROWSER_WORKER_STARTUP_TIMEOUT = 1
-        mock_settings.RESY_BROWSER_WORKER_IDLE_TIMEOUT = 600
+        mock_settings.RESY_BROWSER_WORKER_IDLE_TIMEOUT = 1800
 
         # Worker exits immediately
         mock_proc = MagicMock()
@@ -134,7 +134,7 @@ class TestOneshotFallback:
     @patch('utils.browser_worker_manager.subprocess.run')
     def test_oneshot_timeout(self, mock_run):
         """One-shot returns error on timeout."""
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=180)
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="test", timeout=300)
 
         from utils.browser_worker_manager import BrowserWorkerManager
         manager = BrowserWorkerManager()

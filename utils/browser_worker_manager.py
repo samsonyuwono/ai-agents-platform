@@ -50,7 +50,7 @@ class BrowserWorkerManager:
                     cls._instance = cls()
         return cls._instance
 
-    def send_command(self, method: str, args: Dict, timeout: int = 120,
+    def send_command(self, method: str, args: Dict, timeout: int = 180,
                      resy_credentials: Optional[Dict] = None) -> Dict:
         """Send a command to the worker and return the response.
 
@@ -237,7 +237,7 @@ class BrowserWorkerManager:
 
             result = subprocess.run(
                 [sys.executable, _ONESHOT_SCRIPT, method, json.dumps(args)],
-                capture_output=True, text=True, timeout=180,
+                capture_output=True, text=True, timeout=300,
                 env=env,
             )
             stdout = result.stdout.strip()

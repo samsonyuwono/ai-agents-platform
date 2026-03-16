@@ -135,10 +135,11 @@ class ResyBrowserClient:
         # Build proxy config if available
         proxy = None
         if Settings.has_proxy_configured():
+            from urllib.parse import quote
             proxy = {"server": Settings.RESY_PROXY_SERVER}
             if Settings.RESY_PROXY_USERNAME:
                 proxy["username"] = Settings.RESY_PROXY_USERNAME
-                proxy["password"] = Settings.RESY_PROXY_PASSWORD
+                proxy["password"] = quote(Settings.RESY_PROXY_PASSWORD, safe='')
             print(f"  🌐 Using proxy: {Settings.RESY_PROXY_SERVER}")
 
         # Load storage state (cookies + localStorage) if available
@@ -150,6 +151,7 @@ class ResyBrowserClient:
         self.context = self.browser.new_context(
             storage_state=storage_state_path,
             proxy=proxy,
+            ignore_https_errors=True,
             user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             viewport={'width': 1280, 'height': 1200},
             locale='en-US',
@@ -353,7 +355,7 @@ class ResyBrowserClient:
         """Check if current session is still authenticated."""
         try:
             print("     → Navigating to Resy homepage for validation...")
-            self.page.goto('https://resy.com', wait_until='load', timeout=15000)
+            self.page.goto('https://resy.com', wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
 
             # Wait for dynamic content to load
             print("     → Waiting for page to fully load...")
@@ -439,7 +441,9 @@ class ResyBrowserClient:
 
         try:
             # Navigate to Resy homepage
-            self.page.goto('https://resy.com', wait_until='load', timeout=30000)
+            self.page.goto('https://resy.com', wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
+            # Wait for React to render the nav bar (login button is JS-rendered)
+            self.page.wait_for_selector('button:has-text("Log in"), a:has-text("Log in"), [data-test-id="menu_container-button-log_in"]', timeout=30000)
             self._add_human_behavior(self.page)
 
             # Check if already logged in (no login button present)
@@ -582,7 +586,7 @@ class ResyBrowserClient:
 
             # Wait for navigation/login to complete
             print("    Waiting for login to complete...")
-            time.sleep(3)  # Give time for authentication
+            time.sleep(10)  # Give time for authentication (proxy adds latency)
 
             # Check for success message first (Resy shows "You are all set" modal)
             login_success_selectors = [
@@ -605,7 +609,10 @@ class ResyBrowserClient:
                     'img[alt*="profile" i]',
                     '[data-test-id="user-button"]',
                     'a[href="/user"]',
-                    'button[aria-label*="Account" i]'
+                    'button[aria-label*="Account" i]',
+                    '[class*="Avatar"]',
+                    '[class*="avatar"]',
+                    'img[class*="UserPhoto"]',
                 ]
 
                 for selector in user_indicators:
@@ -614,6 +621,17 @@ class ResyBrowserClient:
                         print(f"    Found user indicator: {selector}")
                         is_logged_in = True
                         break
+
+            # If login button is gone, login succeeded
+            if not is_logged_in:
+                login_btn_gone = True
+                for sel in ['button:has-text("Log in")', 'a:has-text("Log in")']:
+                    if self.page.locator(sel).count() > 0:
+                        login_btn_gone = False
+                        break
+                if login_btn_gone:
+                    print("    Login button gone — login succeeded")
+                    is_logged_in = True
 
             # Check for actual error messages (not just any alert)
             if not is_logged_in:
@@ -879,7 +897,7 @@ class ResyBrowserClient:
             # is done via _pan_map_to_neighborhood after initial results load.
 
             print(f"     Navigating to: {url}")
-            self.page.goto(url, wait_until='load', timeout=30000)
+            self.page.goto(url, wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
             self._add_human_behavior(self.page)
 
             # Wait for venue cards to appear in the DOM
@@ -890,7 +908,7 @@ class ResyBrowserClient:
                         const links = document.querySelectorAll('a[href*="/venues/"]');
                         return links.length > 0;
                     }""",
-                    timeout=15000
+                    timeout=30000
                 )
                 time.sleep(0.5)  # Additional buffer for all cards to render
                 print(f"     ✓ Search results loaded")
@@ -1069,7 +1087,7 @@ class ResyBrowserClient:
             url = f"https://resy.com/cities/{full_location}/venues/{url_slug}"
             print(f"    Navigating to: {url}")
 
-            self.page.goto(url, wait_until='load', timeout=30000)
+            self.page.goto(url, wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
             self._add_human_behavior(self.page)
 
             # Check if page loaded successfully (not 404)
@@ -1081,7 +1099,7 @@ class ResyBrowserClient:
                 old_url = f"https://resy.com/cities/{full_location}/{url_slug}"
                 print(f"    ✗ Venue not found, trying fallback: {old_url}")
 
-                self.page.goto(old_url, wait_until='load', timeout=30000)
+                self.page.goto(old_url, wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
                 self._add_human_behavior(self.page)
 
                 # Check again
@@ -1168,21 +1186,21 @@ class ResyBrowserClient:
             print(f"    Navigating to: {url}")
 
             try:
-                self.page.goto(url, wait_until='load', timeout=30000)
+                self.page.goto(url, wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
             except PlaywrightTimeoutError:
-                print(f"    ⚠️  Page load timeout (30s) — waiting for slots anyway...")
+                print(f"    ⚠️  Page load timeout — waiting for slots anyway...")
 
             # Wait for availability calendar to fully load
             print(f"    Waiting for availability calendar to load...")
             try:
-                self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=10000)
+                self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=20000)
                 time.sleep(0.5)  # Additional buffer
                 print(f"    ✓ Calendar loaded")
             except Exception:
                 # First wait failed — give slow pages a second chance
                 print(f"    ⚠️  Slots not found yet, waiting longer...")
                 try:
-                    self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=20000)
+                    self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=45000)
                     time.sleep(0.5)
                     print(f"    ✓ Calendar loaded (after extended wait)")
                 except Exception as e:
@@ -1387,21 +1405,21 @@ class ResyBrowserClient:
             else:
                 print(f"     Navigating to: {venue_slug} on {date}")
                 try:
-                    self.page.goto(url, wait_until='load', timeout=30000)
+                    self.page.goto(url, wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
                 except PlaywrightTimeoutError:
-                    print(f"     ⚠️  Page load timeout (30s) — waiting for slots anyway...")
+                    print(f"     ⚠️  Page load timeout — waiting for slots anyway...")
 
             # Wait for availability calendar if we just navigated
             if needs_navigation:
                 print(f"     Waiting for availability calendar to load...")
                 try:
-                    self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=10000)
+                    self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=20000)
                     time.sleep(0.5)
                     print(f"     ✓ Availability calendar loaded")
                 except Exception:
                     print(f"     ⚠️  Slots not found yet, waiting longer...")
                     try:
-                        self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=20000)
+                        self.page.wait_for_function(self._SLOT_DETECT_JS, timeout=45000)
                         time.sleep(0.5)
                         print(f"     ✓ Availability calendar loaded (after extended wait)")
                     except Exception as e:
@@ -1422,9 +1440,11 @@ class ResyBrowserClient:
                 for btn in all_buttons:
                     try:
                         btn_text = btn.inner_text()
-                        # Check if this button contains our time text
+                        # Check if this button starts with our time text
                         # Button might say "7:00 AM\nDining Room" when we're looking for "7:00 AM"
-                        if time_text in btn_text and not btn.is_disabled():
+                        # Use startswith to avoid "2:00 PM" matching "12:00 PM"
+                        btn_text_stripped = btn_text.strip()
+                        if btn_text_stripped.startswith(time_text) and not btn.is_disabled():
                             # Additional check: make sure it's a time slot button (contains AM/PM)
                             if ' AM' in btn_text or ' PM' in btn_text:
                                 time_button = btn
@@ -1457,8 +1477,21 @@ class ResyBrowserClient:
                 self._screenshot('no_button')
                 raise Exception(f"Could not find available time slot: {time_text}")
 
+            # Dismiss any backdrop overlay that might intercept clicks
+            try:
+                backdrop = self.page.locator('#backdrop')
+                if backdrop.count() > 0 and backdrop.is_visible():
+                    backdrop.evaluate('el => el.remove()')
+                    time.sleep(0.3)
+            except:
+                pass
+
             print(f"     Clicking time slot...")
-            time_button.click()
+            try:
+                time_button.click(timeout=5000)
+            except Exception:
+                # Force click bypasses overlay interception
+                time_button.click(force=True, timeout=5000)
 
             # Look for booking form or confirmation modal
             print(f"     Waiting for booking modal to appear...")
