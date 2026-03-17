@@ -61,7 +61,7 @@ async def chat(body: ChatRequest, user: AuthUser = Depends(require_auth)):
 
         while True:
             try:
-                event_type, data = await asyncio.wait_for(event_queue.get(), timeout=120)
+                event_type, data = await asyncio.wait_for(event_queue.get(), timeout=15)
                 logger.debug("Delivering SSE event: %s", event_type)
             except asyncio.TimeoutError:
                 if time.time() - start_time > MAX_STREAM_SECONDS:
