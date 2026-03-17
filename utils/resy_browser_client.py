@@ -586,7 +586,7 @@ class ResyBrowserClient:
 
             # Wait for navigation/login to complete
             print("    Waiting for login to complete...")
-            time.sleep(10)  # Give time for authentication (proxy adds latency)
+            time.sleep(3)  # Give time for authentication (proxy adds latency)
 
             # Check for success message first (Resy shows "You are all set" modal)
             login_success_selectors = [
@@ -791,7 +791,7 @@ class ResyBrowserClient:
             if search_btn:
                 search_btn.click()
                 print(f"     ✓ Clicked 'Search Here' button")
-                time.sleep(2)
+                time.sleep(1)
                 try:
                     self.page.wait_for_function(
                         """() => {
@@ -910,7 +910,7 @@ class ResyBrowserClient:
                     }""",
                     timeout=30000
                 )
-                time.sleep(0.5)  # Additional buffer for all cards to render
+                time.sleep(0.3)  # Additional buffer for all cards to render
                 print(f"     ✓ Search results loaded")
             except Exception as e:
                 print(f"     ⚠️  Timeout waiting for results: {e}")
@@ -928,7 +928,7 @@ class ResyBrowserClient:
             print(f"     Found {len(venue_links)} venue links")
 
             seen_slugs = set()
-            for link in venue_links[:10]:  # Limit to first 10 results
+            for link in venue_links[:5]:  # Limit to first 5 results
                 try:
                     href = link.get_attribute('href') or ''
 

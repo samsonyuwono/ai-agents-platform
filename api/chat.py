@@ -39,6 +39,7 @@ async def chat(body: ChatRequest, user: AuthUser = Depends(require_auth)):
     loop = asyncio.get_event_loop()
 
     def event_callback(event_type: str, data: dict):
+        logger.debug("Queuing SSE event: %s (data_keys=%s)", event_type, list(data.keys()))
         loop.call_soon_threadsafe(event_queue.put_nowait, (event_type, data))
 
     def run_agent():
@@ -61,6 +62,7 @@ async def chat(body: ChatRequest, user: AuthUser = Depends(require_auth)):
         while True:
             try:
                 event_type, data = await asyncio.wait_for(event_queue.get(), timeout=120)
+                logger.debug("Delivering SSE event: %s", event_type)
             except asyncio.TimeoutError:
                 if time.time() - start_time > MAX_STREAM_SECONDS:
                     yield _sse_event("error", {"detail": "Request timed out"})

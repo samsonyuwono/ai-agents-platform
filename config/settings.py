@@ -36,9 +36,9 @@ class Settings:
 
     # Resy Dynamic Configuration
     RESY_DEFAULT_LOCATION = os.environ.get("RESY_DEFAULT_LOCATION", "ny")
-    RESY_RATE_LIMIT_MIN_SECONDS = int(os.environ.get("RESY_RATE_LIMIT_MIN_SECONDS", "3"))
+    RESY_RATE_LIMIT_MIN_SECONDS = int(os.environ.get("RESY_RATE_LIMIT_MIN_SECONDS", "2"))
     RESY_RATE_LIMIT_JITTER_MIN = float(os.environ.get("RESY_RATE_LIMIT_JITTER_MIN", "0.5"))
-    RESY_RATE_LIMIT_JITTER_MAX = float(os.environ.get("RESY_RATE_LIMIT_JITTER_MAX", "1.5"))
+    RESY_RATE_LIMIT_JITTER_MAX = float(os.environ.get("RESY_RATE_LIMIT_JITTER_MAX", "1.0"))
     RESY_BROWSER_TIMEOUT_MS = int(os.environ.get("RESY_BROWSER_TIMEOUT_MS", "90000"))
 
     # Browser Worker (persistent Chromium process)
@@ -71,8 +71,8 @@ class Settings:
     WEB_CORS_ORIGINS = os.environ.get("WEB_CORS_ORIGINS", "http://localhost:5173")
 
     # Model Configuration
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
-    MAX_TOKENS = 4096
+    DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+    MAX_TOKENS = 1024
 
     # Paths
     NEWS_FOLDER = "news"

@@ -140,25 +140,28 @@ class TestExecuteToolSearch:
     """Test execute_tool for search-related tools."""
 
     def test_search_restaurants_success(self, agent):
-        """Test search_resy_restaurants returns formatted results."""
-        agent.resy_client.search_venues.return_value = [
-            {
-                'id': '123',
-                'name': 'Carbone',
-                'url_slug': 'carbone',
-                'location': {'neighborhood': 'Greenwich Village', 'city': 'New York'},
-                'price_range': '$$$$',
-                'rating': 4.8
-            },
-            {
-                'id': '456',
-                'name': "L'Artusi",
-                'url_slug': 'lartusi',
-                'location': {'neighborhood': 'West Village', 'city': 'New York'},
-                'price_range': '$$$',
-                'rating': 4.6
-            }
-        ]
+        """Test search_resy_restaurants returns formatted results via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True,
+            'results': [
+                {
+                    'id': '123',
+                    'name': 'Carbone',
+                    'url_slug': 'carbone',
+                    'location': {'neighborhood': 'Greenwich Village', 'city': 'New York'},
+                    'price_range': '$$$$',
+                    'rating': 4.8
+                },
+                {
+                    'id': '456',
+                    'name': "L'Artusi",
+                    'url_slug': 'lartusi',
+                    'location': {'neighborhood': 'West Village', 'city': 'New York'},
+                    'price_range': '$$$',
+                    'rating': 4.6
+                }
+            ]
+        })
 
         result = agent.execute_tool('search_resy_restaurants', {'query': 'Carbone'})
 
@@ -167,10 +170,14 @@ class TestExecuteToolSearch:
         assert result['restaurants'][0]['name'] == 'Carbone'
         assert result['restaurants'][0]['slug'] == 'carbone'
         assert result['restaurants'][0]['location'] == 'Greenwich Village, New York'
+        agent._browser_search_subprocess.assert_called_once_with(
+            'search_venues', {'query': 'Carbone', 'location': None})
 
     def test_search_restaurants_no_results(self, agent):
         """Test search_resy_restaurants with no results."""
-        agent.resy_client.search_venues.return_value = []
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True, 'results': []
+        })
 
         result = agent.execute_tool('search_resy_restaurants', {'query': 'Nonexistent'})
 
@@ -180,76 +187,62 @@ class TestExecuteToolSearch:
 
     def test_search_restaurants_limits_to_5(self, agent):
         """Test that search results are limited to 5."""
-        agent.resy_client.search_venues.return_value = [
-            {'id': str(i), 'name': f'Restaurant {i}', 'url_slug': f'rest-{i}',
-             'location': {}, 'price_range': '$$', 'rating': 4.0}
-            for i in range(10)
-        ]
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True,
+            'results': [
+                {'id': str(i), 'name': f'Restaurant {i}', 'url_slug': f'rest-{i}',
+                 'location': {}, 'price_range': '$$', 'rating': 4.0}
+                for i in range(10)
+            ]
+        })
 
         result = agent.execute_tool('search_resy_restaurants', {'query': 'test'})
 
         assert result['count'] == 5
 
     def test_search_restaurants_with_location(self, agent):
-        """Test search passes location to client."""
-        agent.resy_client.search_venues.return_value = []
+        """Test search passes location to worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True, 'results': []
+        })
 
         agent.execute_tool('search_resy_restaurants',
                            {'query': 'Italian', 'location': 'Manhattan'})
 
-        agent.resy_client.search_venues.assert_called_once_with(
-            query='Italian', location='Manhattan')
+        agent._browser_search_subprocess.assert_called_once_with(
+            'search_venues', {'query': 'Italian', 'location': 'Manhattan'})
 
-    def test_search_restaurants_threading_fallback(self, agent):
-        """Test threading error triggers subprocess fallback."""
-        agent.resy_client.search_venues.side_effect = Exception(
-            "cannot be called from a different thread")
-        agent._handle_threading_fallback = MagicMock(return_value={
-            'success': True,
-            'results': [{'id': '1', 'name': 'Test', 'url_slug': 'test',
-                         'location': {}, 'price_range': '$$', 'rating': 4.0}]
+    def test_search_restaurants_worker_error(self, agent):
+        """Test search returns error when worker fails."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': False, 'error': 'Worker unavailable'
         })
 
         result = agent.execute_tool('search_resy_restaurants', {'query': 'test'})
 
-        agent._handle_threading_fallback.assert_called_once()
-        assert result['success'] is True
-
-    @patch('agents.reservation_agent.BrowserWorkerManager')
-    def test_search_by_cuisine_no_browser_method(self, mock_manager_cls, agent):
-        """Test cuisine search falls back to worker when client lacks method."""
-        # Remove search_by_cuisine method to simulate API-only client
-        del agent.resy_client.search_by_cuisine
-
-        mock_manager = MagicMock()
-        mock_manager.send_command.return_value = {
-            "success": False, "error": "Browser mode not available"
-        }
-        mock_manager_cls.get_instance.return_value = mock_manager
-
-        result = agent.execute_tool('search_resy_by_cuisine',
-                                    {'cuisine': 'Japanese'})
-
         assert result['success'] is False
-        assert 'message' in result
+        assert result['message'] == 'Worker unavailable'
 
     def test_search_by_cuisine_success(self, agent):
-        """Test cuisine search returns formatted results with time slots."""
-        agent.resy_client.search_by_cuisine.return_value = [
-            {
-                'name': 'Sushi Nakazawa',
-                'slug': 'sushi-nakazawa',
-                'rating': 4.9,
-                'review_count': 200,
-                'cuisine': 'Japanese',
-                'price_range': '$$$$',
-                'neighborhood': 'West Village',
-                'available_times': [
-                    {'time': '7:00 PM', 'type': 'Dining Room',
-                     'config_id': 'sushi-nakazawa|||2026-03-08|||7:00 PM'}
-                ]
-            }
-        ]
+        """Test cuisine search returns formatted results via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True,
+            'results': [
+                {
+                    'name': 'Sushi Nakazawa',
+                    'slug': 'sushi-nakazawa',
+                    'rating': 4.9,
+                    'review_count': 200,
+                    'cuisine': 'Japanese',
+                    'price_range': '$$$$',
+                    'neighborhood': 'West Village',
+                    'available_times': [
+                        {'time': '7:00 PM', 'type': 'Dining Room',
+                         'config_id': 'sushi-nakazawa|||2026-03-08|||7:00 PM'}
+                    ]
+                }
+            ]
+        })
 
         result = agent.execute_tool('search_resy_by_cuisine',
                                     {'cuisine': 'Japanese', 'neighborhood': 'West Village'})
@@ -258,10 +251,17 @@ class TestExecuteToolSearch:
         assert result['count'] == 1
         assert result['restaurants'][0]['name'] == 'Sushi Nakazawa'
         assert len(result['restaurants'][0]['available_times']) == 1
+        agent._browser_search_subprocess.assert_called_once_with(
+            'search_by_cuisine', {
+                'cuisine': 'Japanese', 'neighborhood': 'West Village',
+                'location': 'ny', 'date': None, 'party_size': 2
+            })
 
     def test_search_by_cuisine_no_results(self, agent):
         """Test cuisine search with no results."""
-        agent.resy_client.search_by_cuisine.return_value = []
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True, 'results': []
+        })
 
         result = agent.execute_tool('search_resy_by_cuisine',
                                     {'cuisine': 'Ethiopian', 'neighborhood': 'Soho'})
@@ -270,18 +270,33 @@ class TestExecuteToolSearch:
         assert result['cuisine'] == 'Ethiopian'
         assert result['neighborhood'] == 'Soho'
 
+    def test_search_by_cuisine_worker_error(self, agent):
+        """Test cuisine search returns error when worker fails."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': False, 'error': 'Browser mode not available'
+        })
+
+        result = agent.execute_tool('search_resy_by_cuisine',
+                                    {'cuisine': 'Japanese'})
+
+        assert result['success'] is False
+        assert result['message'] == 'Browser mode not available'
+
 
 class TestExecuteToolAvailability:
     """Test execute_tool for availability checking."""
 
     def test_check_availability_success(self, agent):
-        """Test check_resy_availability with available slots."""
-        agent.resy_client.get_availability.return_value = [
-            {'config_id': 'carbone|||2026-03-10|||7:00 PM',
-             'time': '7:00 PM', 'table_name': 'Dining Room'},
-            {'config_id': 'carbone|||2026-03-10|||8:00 PM',
-             'time': '8:00 PM', 'table_name': 'Bar'},
-        ]
+        """Test check_resy_availability with available slots via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True,
+            'results': [
+                {'config_id': 'carbone|||2026-03-10|||7:00 PM',
+                 'time': '7:00 PM', 'table_name': 'Dining Room'},
+                {'config_id': 'carbone|||2026-03-10|||8:00 PM',
+                 'time': '8:00 PM', 'table_name': 'Bar'},
+            ]
+        })
 
         result = agent.execute_tool('check_resy_availability', {
             'venue_id': '123', 'date': '2026-03-10', 'party_size': 2
@@ -292,10 +307,14 @@ class TestExecuteToolAvailability:
         assert result['available_times'][0]['time'] == '7:00 PM'
         assert result['date'] == '2026-03-10'
         assert result['party_size'] == 2
+        agent._browser_search_subprocess.assert_called_once_with(
+            'get_availability', {'venue_id': '123', 'date': '2026-03-10', 'party_size': 2})
 
     def test_check_availability_no_slots(self, agent):
-        """Test check_resy_availability with no availability."""
-        agent.resy_client.get_availability.return_value = []
+        """Test check_resy_availability with no availability via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True, 'results': []
+        })
 
         result = agent.execute_tool('check_resy_availability', {
             'venue_id': '123', 'date': '2026-03-10', 'party_size': 4
@@ -305,19 +324,32 @@ class TestExecuteToolAvailability:
         assert '4 people' in result['message']
         assert '2026-03-10' in result['message']
 
+    def test_check_availability_worker_error(self, agent):
+        """Test check_resy_availability returns error when worker fails."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': False, 'error': 'Worker unavailable'
+        })
+
+        result = agent.execute_tool('check_resy_availability', {
+            'venue_id': '123', 'date': '2026-03-10', 'party_size': 2
+        })
+
+        assert result['success'] is False
+        assert result['message'] == 'Worker unavailable'
+
 
 class TestExecuteToolReservation:
     """Test execute_tool for making and managing reservations."""
 
     def test_make_reservation_success(self, agent):
-        """Test successful reservation booking."""
-        agent.resy_client.make_reservation.return_value = {
+        """Test successful reservation booking via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
             'success': True,
             'reservation_id': 'RES-12345',
             'venue_slug': 'carbone',
             'time_slot': '7:00 PM',
             'confirmation_token': 'tok-abc'
-        }
+        })
 
         result = agent.execute_tool('make_resy_reservation', {
             'config_id': 'carbone|||2026-03-10|||7:00 PM',
@@ -328,16 +360,21 @@ class TestExecuteToolReservation:
         assert result['success'] is True
         assert result['reservation_id'] == 'RES-12345'
         agent.store.add_reservation.assert_called_once()
+        agent._browser_search_subprocess.assert_called_once_with(
+            'make_reservation', {
+                'config_id': 'carbone|||2026-03-10|||7:00 PM',
+                'date': '2026-03-10', 'party_size': 2
+            })
 
     def test_make_reservation_saves_to_store(self, agent):
         """Test that successful reservations are persisted."""
-        agent.resy_client.make_reservation.return_value = {
+        agent._browser_search_subprocess = MagicMock(return_value={
             'success': True,
             'reservation_id': 'RES-999',
             'venue_slug': 'lartusi',
             'time_slot': '8:00 PM',
             'confirmation_token': 'tok-xyz'
-        }
+        })
 
         agent.execute_tool('make_resy_reservation', {
             'config_id': 'lartusi|||2026-03-15|||8:00 PM',
@@ -354,12 +391,12 @@ class TestExecuteToolReservation:
 
     def test_make_reservation_unconfirmed(self, agent):
         """Test reservation with no confirmation number gets pending status."""
-        agent.resy_client.make_reservation.return_value = {
+        agent._browser_search_subprocess = MagicMock(return_value={
             'success': True,
             'reservation_id': None,
             'venue_slug': 'carbone',
             'time_slot': '7:00 PM'
-        }
+        })
 
         result = agent.execute_tool('make_resy_reservation', {
             'config_id': 'carbone|||2026-03-10|||7:00 PM',
@@ -373,11 +410,11 @@ class TestExecuteToolReservation:
         assert call_args['status'] == 'pending_confirmation'
 
     def test_make_reservation_failure(self, agent):
-        """Test failed reservation returns error info."""
-        agent.resy_client.make_reservation.return_value = {
+        """Test failed reservation returns error info via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
             'success': False,
             'error': 'Could not confirm the reservation'
-        }
+        })
 
         result = agent.execute_tool('make_resy_reservation', {
             'config_id': 'carbone|||2026-03-10|||7:00 PM',
@@ -386,16 +423,16 @@ class TestExecuteToolReservation:
         })
 
         assert result['success'] is False
-        assert 'check their Resy app' in result['message']
+        assert 'Could not confirm' in result['message']
         agent.store.add_reservation.assert_not_called()
 
     def test_make_reservation_conflict(self, agent):
         """Test reservation conflict returns status and message."""
-        agent.resy_client.make_reservation.return_value = {
+        agent._browser_search_subprocess = MagicMock(return_value={
             'success': False,
             'status': 'conflict',
             'error': 'You already have a reservation at this time'
-        }
+        })
 
         result = agent.execute_tool('make_resy_reservation', {
             'config_id': 'carbone|||2026-03-10|||7:00 PM',
@@ -408,11 +445,11 @@ class TestExecuteToolReservation:
 
     def test_make_reservation_modal_opened(self, agent):
         """Test reservation that opens modal but fails to book."""
-        agent.resy_client.make_reservation.return_value = {
+        agent._browser_search_subprocess = MagicMock(return_value={
             'success': False,
             'status': 'modal_opened',
             'error': 'Reserve button not found'
-        }
+        })
 
         result = agent.execute_tool('make_resy_reservation', {
             'config_id': 'carbone|||2026-03-10|||7:00 PM',
@@ -422,19 +459,34 @@ class TestExecuteToolReservation:
 
         assert 'modal opened' in result['message'].lower()
 
+    def test_make_reservation_worker_error(self, agent):
+        """Test make_resy_reservation returns error when worker fails."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': False, 'error': 'Worker unavailable'
+        })
+
+        result = agent.execute_tool('make_resy_reservation', {
+            'config_id': 'carbone|||2026-03-10|||7:00 PM',
+            'date': '2026-03-10',
+            'party_size': 2
+        })
+
+        assert result['success'] is False
+        assert result['message'] == 'Worker unavailable'
+
 
 class TestExecuteToolConflictResolution:
     """Test execute_tool for reservation conflict resolution."""
 
     def test_resolve_conflict_continue_booking(self, agent):
-        """Test resolving conflict by continuing with new booking."""
-        agent.resy_client.resolve_reservation_conflict.return_value = {
+        """Test resolving conflict by continuing with new booking via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
             'success': True,
             'status': 'booked',
             'reservation_id': 'RES-NEW',
             'venue_slug': 'carbone',
             'time_slot': '7:00 PM'
-        }
+        })
 
         result = agent.execute_tool('resolve_reservation_conflict', {
             'choice': 'continue_booking',
@@ -445,13 +497,14 @@ class TestExecuteToolConflictResolution:
 
         assert result['success'] is True
         agent.store.add_reservation.assert_called_once()
+        agent._browser_search_subprocess.assert_called_once()
 
     def test_resolve_conflict_keep_existing(self, agent):
-        """Test resolving conflict by keeping existing reservation."""
-        agent.resy_client.resolve_reservation_conflict.return_value = {
+        """Test resolving conflict by keeping existing reservation via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
             'success': True,
             'status': 'kept_existing'
-        }
+        })
 
         result = agent.execute_tool('resolve_reservation_conflict', {
             'choice': 'keep_existing',
@@ -465,13 +518,13 @@ class TestExecuteToolConflictResolution:
         agent.store.add_reservation.assert_not_called()
 
     def test_resolve_conflict_invalid_config_id(self, agent):
-        """Test conflict resolution with non-standard config_id format."""
-        agent.resy_client.resolve_reservation_conflict.return_value = {
+        """Test conflict resolution with non-standard config_id format via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
             'success': True,
             'status': 'booked',
             'venue_slug': 'test',
             'time_slot': '7:00 PM'
-        }
+        })
 
         # config_id without ||| separator should not raise
         result = agent.execute_tool('resolve_reservation_conflict', {
@@ -483,35 +536,68 @@ class TestExecuteToolConflictResolution:
 
         assert result['success'] is True
         # venue_slug and time_text should be None since parsing failed
-        call_kwargs = agent.resy_client.resolve_reservation_conflict.call_args
-        assert call_kwargs[1]['venue_slug'] is None
-        assert call_kwargs[1]['time_text'] is None
+        call_args = agent._browser_search_subprocess.call_args[0]
+        assert call_args[1]['venue_slug'] is None
+        assert call_args[1]['time_text'] is None
+
+    def test_resolve_conflict_worker_error(self, agent):
+        """Test resolve_reservation_conflict returns error when worker fails."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': False, 'error': 'Worker unavailable'
+        })
+
+        result = agent.execute_tool('resolve_reservation_conflict', {
+            'choice': 'continue_booking',
+            'config_id': 'carbone|||2026-03-10|||7:00 PM',
+            'date': '2026-03-10',
+            'party_size': 2
+        })
+
+        assert result['success'] is False
+        assert result['message'] == 'Worker unavailable'
 
 
 class TestExecuteToolViewAndMisc:
     """Test execute_tool for view and utility tools."""
 
     def test_view_reservations_with_results(self, agent):
-        """Test viewing reservations when there are bookings."""
-        agent.resy_client.get_reservations.return_value = [
-            {'restaurant': 'Carbone', 'date': '2026-03-10', 'time': '7:00 PM'},
-            {'restaurant': "L'Artusi", 'date': '2026-03-12', 'time': '8:00 PM'},
-        ]
+        """Test viewing reservations when there are bookings via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True,
+            'results': [
+                {'restaurant': 'Carbone', 'date': '2026-03-10', 'time': '7:00 PM'},
+                {'restaurant': "L'Artusi", 'date': '2026-03-12', 'time': '8:00 PM'},
+            ]
+        })
 
         result = agent.execute_tool('view_my_reservations', {})
 
         assert result['success'] is True
         assert result['count'] == 2
+        agent._browser_search_subprocess.assert_called_once_with('get_reservations', {})
 
     def test_view_reservations_empty(self, agent):
-        """Test viewing reservations when there are no bookings."""
-        agent.resy_client.get_reservations.return_value = []
+        """Test viewing reservations when there are no bookings via worker."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True, 'results': []
+        })
 
         result = agent.execute_tool('view_my_reservations', {})
 
         assert result['success'] is True
         assert result['count'] == 0
         assert 'No upcoming reservations' in result['message']
+
+    def test_view_reservations_worker_error(self, agent):
+        """Test view_my_reservations returns error when worker fails."""
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': False, 'error': 'Worker unavailable'
+        })
+
+        result = agent.execute_tool('view_my_reservations', {})
+
+        assert result['success'] is False
+        assert result['message'] == 'Worker unavailable'
 
     def test_get_current_time(self, agent):
         """Test get_current_time returns formatted time."""
@@ -604,10 +690,13 @@ class TestRunLoop:
         mock_response_2.content = [mock_text]
 
         agent.client.messages.create.side_effect = [mock_response_1, mock_response_2]
-        agent.resy_client.search_venues.return_value = [
-            {'id': '123', 'name': 'Carbone', 'url_slug': 'carbone',
-             'location': {}, 'price_range': '$$$$', 'rating': 4.8}
-        ]
+        agent._browser_search_subprocess = MagicMock(return_value={
+            'success': True,
+            'results': [
+                {'id': '123', 'name': 'Carbone', 'url_slug': 'carbone',
+                 'location': {}, 'price_range': '$$$$', 'rating': 4.8}
+            ]
+        })
 
         result = agent.run('Find Carbone')
 
@@ -722,7 +811,7 @@ class TestHelperMethods:
         assert result['results'] == []
         mock_manager.send_command.assert_called_once_with(
             method='search_venues', args={'query': 'test'},
-            timeout=180, resy_credentials=None,
+            timeout=120, resy_credentials=None,
         )
 
     @patch('agents.reservation_agent.BrowserWorkerManager')

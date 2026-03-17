@@ -311,16 +311,13 @@ IMPORTANT BEHAVIORS:
 
         if tool_name == "search_resy_restaurants":
             search_args = {"query": tool_input["query"], "location": tool_input.get("location")}
-            try:
-                results = self.resy_client.search_venues(**search_args)
-            except Exception as e:
-                if _is_threading_error(e):
-                    fallback = self._handle_threading_fallback("search_venues", search_args)
-                    if not fallback.get("success"):
-                        return fallback
-                    results = fallback.get("results", [])
-                else:
-                    raise
+            # Always route through browser worker (persistent process, already authenticated)
+            sub_result = self._browser_search_subprocess("search_venues", search_args)
+            if not sub_result.get("success"):
+                if "error" in sub_result:
+                    sub_result['message'] = sub_result.pop('error')
+                return sub_result
+            results = sub_result.get("results", [])
 
             # Format results for Claude
             if results:
@@ -360,23 +357,13 @@ IMPORTANT BEHAVIORS:
                 "party_size": tool_input.get("party_size", 2)
             }
 
-            # If current client doesn't support cuisine search, use browser subprocess
-            if not hasattr(self.resy_client, 'search_by_cuisine'):
-                fallback = self._handle_threading_fallback("search_by_cuisine", cuisine_args)
-                if not fallback.get("success"):
-                    return fallback
-                results = fallback.get("results", [])
-            else:
-                try:
-                    results = self.resy_client.search_by_cuisine(**cuisine_args)
-                except Exception as e:
-                    if _is_threading_error(e):
-                        fallback = self._handle_threading_fallback("search_by_cuisine", cuisine_args)
-                        if not fallback.get("success"):
-                            return fallback
-                        results = fallback.get("results", [])
-                    else:
-                        raise
+            # Always use browser worker (persistent process, already authenticated)
+            sub_result = self._browser_search_subprocess("search_by_cuisine", cuisine_args)
+            if not sub_result.get("success"):
+                if "error" in sub_result:
+                    sub_result['message'] = sub_result.pop('error')
+                return sub_result
+            results = sub_result.get("results", [])
 
             if results:
                 formatted = []
@@ -419,16 +406,12 @@ IMPORTANT BEHAVIORS:
                 "date": tool_input["date"],
                 "party_size": tool_input["party_size"]
             }
-            try:
-                slots = self.resy_client.get_availability(**avail_args)
-            except Exception as e:
-                if _is_threading_error(e):
-                    fallback = self._handle_threading_fallback("get_availability", avail_args)
-                    if not fallback.get("success"):
-                        return fallback
-                    slots = fallback.get("results", [])
-                else:
-                    raise
+            sub_result = self._browser_search_subprocess("get_availability", avail_args)
+            if not sub_result.get("success"):
+                if "error" in sub_result:
+                    sub_result['message'] = sub_result.pop('error')
+                return sub_result
+            slots = sub_result.get("results", [])
 
             if slots:
                 # Format slots for Claude
@@ -459,13 +442,9 @@ IMPORTANT BEHAVIORS:
                 "date": tool_input["date"],
                 "party_size": tool_input["party_size"]
             }
-            try:
-                result = self.resy_client.make_reservation(**reservation_args)
-            except Exception as e:
-                if _is_threading_error(e):
-                    result = self._handle_threading_fallback("make_reservation", reservation_args)
-                else:
-                    raise
+            result = self._browser_search_subprocess("make_reservation", reservation_args)
+            if not result.get("success") and "error" in result:
+                result['message'] = result.pop('error')
 
             if result.get('success'):
                 self._save_reservation(result, tool_input)
@@ -503,13 +482,9 @@ IMPORTANT BEHAVIORS:
                 "venue_slug": venue_slug,
                 "time_text": time_text
             }
-            try:
-                result = self.resy_client.resolve_reservation_conflict(**conflict_args)
-            except Exception as e:
-                if _is_threading_error(e):
-                    result = self._handle_threading_fallback("resolve_reservation_conflict", conflict_args)
-                else:
-                    raise
+            result = self._browser_search_subprocess("resolve_reservation_conflict", conflict_args)
+            if not result.get("success") and "error" in result:
+                result['message'] = result.pop('error')
 
             if result.get('success') and result.get('status') != 'kept_existing':
                 self._save_reservation(result, tool_input)
@@ -517,16 +492,12 @@ IMPORTANT BEHAVIORS:
             return result
 
         elif tool_name == "view_my_reservations":
-            try:
-                reservations = self.resy_client.get_reservations()
-            except Exception as e:
-                if _is_threading_error(e):
-                    fallback = self._handle_threading_fallback("get_reservations", {})
-                    if not fallback.get("success"):
-                        return fallback
-                    reservations = fallback.get("results", [])
-                else:
-                    raise
+            sub_result = self._browser_search_subprocess("get_reservations", {})
+            if not sub_result.get("success"):
+                if "error" in sub_result:
+                    sub_result['message'] = sub_result.pop('error')
+                return sub_result
+            reservations = sub_result.get("results", [])
 
             if reservations:
                 return {
@@ -605,7 +576,7 @@ IMPORTANT BEHAVIORS:
         return manager.send_command(
             method=method,
             args=args,
-            timeout=180,
+            timeout=120,
             resy_credentials=self._resy_credentials,
         )
 
@@ -783,9 +754,14 @@ Your reservation has been successfully booked.
             logger.debug("Thinking (iteration %d)", iteration)
             emit("thinking", {"iteration": iteration})
 
+            # Truncate history to last 10 messages to reduce token costs
+            messages = self.conversation_history
+            if len(messages) > 10:
+                messages = messages[-10:]
+
             # Call Claude with tool definitions and system prompt
             response = self.call_claude(
-                messages=self.conversation_history,
+                messages=messages,
                 tools=self.define_tools(),
                 system=self.system_prompt
             )
@@ -807,8 +783,14 @@ Your reservation has been successfully booked.
                         logger.info("Using tool: %s", tool_name)
                         emit("tool_call", {"tool": tool_name, "input": tool_input})
 
-                        # Execute the tool
-                        result = self.execute_tool(tool_name, tool_input)
+                        # Execute the tool — must always produce a result so
+                        # tool_result is appended even on failure (prevents
+                        # corrupted conversation history).
+                        try:
+                            result = self.execute_tool(tool_name, tool_input)
+                        except Exception as e:
+                            logger.error("Tool %s failed: %s", tool_name, e)
+                            result = {"success": False, "error": str(e)}
 
                         emit("tool_result", {"tool": tool_name, "result": result})
 
@@ -831,7 +813,11 @@ Your reservation has been successfully booked.
                     if hasattr(content_block, "text"):
                         final_answer += content_block.text
 
-                logger.info("Final response generated")
+                logger.info("Final response generated (length=%d, blocks=%d)",
+                            len(final_answer), len(response.content))
+                if not final_answer.strip():
+                    logger.warning("Empty final response! Content blocks: %s",
+                                   [type(b).__name__ for b in response.content])
                 emit("message", {"text": final_answer})
                 emit("done")
                 return final_answer
