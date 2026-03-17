@@ -1565,6 +1565,12 @@ class ResyBrowserClient:
             print(f"     Waiting for booking iframe to load...")
             continue_button = None
             booking_button_selector = '[data-test-id="order_summary_page-button-book"]'
+            # Broader selectors to catch Reserve Now button regardless of data-test-id
+            reserve_text_selectors = [
+                'button:has-text("Reserve Now")',
+                'button:has-text("Complete Reservation")',
+                'button:has-text("Book Now")',
+            ]
 
             iframe_result = self._wait_for_in_frames([booking_button_selector], timeout=10)
             if iframe_result is not None:
@@ -1581,88 +1587,118 @@ class ResyBrowserClient:
                 frames = self.page.frames
                 for i, frame in enumerate(frames):
                     try:
-                        if frame.locator(booking_button_selector).count() > 0:
-                            elem = frame.locator(booking_button_selector).first
+                        # Try data-test-id selector first
+                        selectors_to_try = [booking_button_selector] + reserve_text_selectors
+                        for sel in selectors_to_try:
+                            if frame.locator(sel).count() > 0:
+                                elem = frame.locator(sel).first
 
-                            # Scroll within the iframe to make button visible
-                            try:
-                                # Scroll the iframe content to bottom
-                                frame.evaluate('window.scrollTo(0, document.body.scrollHeight)')
-                                time.sleep(0.5)
-                            except:
-                                pass
+                                # Scroll within the iframe to make button visible
+                                try:
+                                    frame.evaluate('window.scrollTo(0, document.body.scrollHeight)')
+                                    time.sleep(0.5)
+                                except:
+                                    pass
 
-                            # Try to scroll element into view
-                            try:
-                                elem.scroll_into_view_if_needed(timeout=3000)
-                                time.sleep(0.5)
-                            except:
-                                pass
+                                try:
+                                    elem.scroll_into_view_if_needed(timeout=3000)
+                                    time.sleep(0.5)
+                                except:
+                                    pass
 
-                            if elem.is_visible() and not elem.is_disabled():
-                                continue_button = elem
-                                booking_frame = frame
-                                print(f"       ✓ Found Reserve Now button in iframe {i}")
-                                break
+                                if elem.is_visible() and not elem.is_disabled():
+                                    continue_button = elem
+                                    booking_frame = frame
+                                    print(f"       ✓ Found Reserve Now button in iframe {i} via '{sel}'")
+                                    break
+                        if continue_button:
+                            break
                     except:
                         continue
             except Exception as e:
                 print(f"       ⚠️  Iframe check failed: {e}")
 
-            # FALLBACK: If not in iframe, check main page
+            # FALLBACK: If not in iframe, check main page with all selectors
             if not continue_button:
                 print(f"       Not in iframes, checking main page...")
-                try:
-                    if self.page.locator(booking_button_selector).count() > 0:
-                        elem = self.page.locator(booking_button_selector).first
-                        elem.scroll_into_view_if_needed(timeout=2000)
-                        time.sleep(0.5)
-                        if elem.is_visible() and not elem.is_disabled():
-                            continue_button = elem
-                            print(f"       ✓ Found on main page")
-                except:
-                    pass
+                all_selectors = [booking_button_selector] + reserve_text_selectors
+                for sel in all_selectors:
+                    try:
+                        if self.page.locator(sel).count() > 0:
+                            elem = self.page.locator(sel).first
+                            elem.scroll_into_view_if_needed(timeout=2000)
+                            time.sleep(0.5)
+                            if elem.is_visible() and not elem.is_disabled():
+                                continue_button = elem
+                                print(f"       ✓ Found on main page via '{sel}'")
+                                break
+                    except:
+                        pass
 
-                # FALLBACK 2: JavaScript click - find ANY element with "Reserve" text
+                # FALLBACK 2: JavaScript click - search main page AND all iframes
                 if not continue_button:
                     print(f"       Using JavaScript to find and click Reserve button...")
                     try:
-                        # Use JavaScript to find and click the button
+                        # Search across main document and all iframe documents
                         clicked = self.page.evaluate("""() => {
-                            // Find all clickable elements
-                            const allElements = document.querySelectorAll('button, a, div[role="button"], span[role="button"]');
+                            function findReserveButton(doc) {
+                                const allElements = doc.querySelectorAll('button, a, div[role="button"], span[role="button"]');
 
-                            for (const elem of allElements) {
-                                const text = elem.innerText || elem.textContent || '';
-
-                                // Look for Reserve/Book keywords
-                                if (text.toLowerCase().includes('reserve') ||
-                                    text.toLowerCase().includes('book now') ||
-                                    text.toLowerCase().includes('complete reservation')) {
-
-                                    // Check if it has the right data-test-id
+                                // First pass: data-test-id match
+                                for (const elem of allElements) {
                                     if (elem.getAttribute('data-test-id') === 'order_summary_page-button-book') {
                                         elem.scrollIntoView({behavior: 'smooth', block: 'center'});
-                                        setTimeout(() => elem.click(), 500);
-                                        return {success: true, text: text.trim(), method: 'data-test-id'};
+                                        elem.click();
+                                        return {success: true, text: (elem.innerText || '').trim(), method: 'data-test-id'};
                                     }
                                 }
+
+                                // Second pass: text match (Reserve Now, Book Now, etc.)
+                                for (const elem of allElements) {
+                                    const text = (elem.innerText || elem.textContent || '').trim().toLowerCase();
+                                    if (text === 'reserve now' || text === 'book now' || text === 'complete reservation') {
+                                        elem.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                        elem.click();
+                                        return {success: true, text: (elem.innerText || '').trim(), method: 'text-exact'};
+                                    }
+                                }
+
+                                // Third pass: partial text + button class
+                                for (const elem of allElements) {
+                                    const text = (elem.innerText || elem.textContent || '').toLowerCase();
+                                    const classes = elem.className || '';
+                                    if (text.includes('reserve') && (classes.includes('Button--primary') || elem.tagName === 'BUTTON')) {
+                                        elem.scrollIntoView({behavior: 'smooth', block: 'center'});
+                                        elem.click();
+                                        return {success: true, text: (elem.innerText || '').trim(), method: 'text+class'};
+                                    }
+                                }
+
+                                return null;
                             }
 
-                            // If not found by data-test-id, try by text and button class
-                            for (const elem of allElements) {
-                                const text = elem.innerText || elem.textContent || '';
-                                const classes = elem.className || '';
+                            // Search main document
+                            let result = findReserveButton(document);
+                            if (result) return result;
 
-                                if ((text.toLowerCase().includes('reserve') && classes.includes('Button--primary')) ||
-                                    elem.getAttribute('data-test-id') === 'order_summary_page-button-book') {
-                                    elem.scrollIntoView({behavior: 'smooth', block: 'center'});
-                                    setTimeout(() => elem.click(), 500);
-                                    return {success: true, text: text.trim(), method: 'text+class'};
+                            // Search all iframes
+                            const iframes = document.querySelectorAll('iframe');
+                            for (const iframe of iframes) {
+                                try {
+                                    const iframeDoc = iframe.contentDocument || iframe.contentWindow.document;
+                                    if (iframeDoc) {
+                                        result = findReserveButton(iframeDoc);
+                                        if (result) {
+                                            result.method += ' (iframe)';
+                                            return result;
+                                        }
+                                    }
+                                } catch(e) {
+                                    // Cross-origin iframe, skip
                                 }
                             }
 
-                            return {success: false, message: 'Button not found'};
+                            return {success: false, message: 'Button not found in main page or iframes'};
                         }""")
 
                         if clicked and clicked.get('success'):
