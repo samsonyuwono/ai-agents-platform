@@ -353,7 +353,7 @@ class ResyBrowserClient:
         """Check if current session is still authenticated."""
         try:
             print("     → Navigating to Resy homepage for validation...")
-            self.page.goto('https://resy.com', wait_until='load', timeout=15000)
+            self.page.goto('https://resy.com', wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
 
             # Wait for dynamic content to load
             print("     → Waiting for page to fully load...")
@@ -896,7 +896,7 @@ class ResyBrowserClient:
             # is done via _pan_map_to_neighborhood after initial results load.
 
             print(f"     Navigating to: {url}")
-            self.page.goto(url, wait_until='load', timeout=30000)
+            self.page.goto(url, wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
             self._add_human_behavior(self.page)
 
             # Wait for venue cards to appear in the DOM
@@ -1086,7 +1086,7 @@ class ResyBrowserClient:
             url = f"https://resy.com/cities/{full_location}/venues/{url_slug}"
             print(f"    Navigating to: {url}")
 
-            self.page.goto(url, wait_until='load', timeout=30000)
+            self.page.goto(url, wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
             self._add_human_behavior(self.page)
 
             # Check if page loaded successfully (not 404)
@@ -1098,7 +1098,7 @@ class ResyBrowserClient:
                 old_url = f"https://resy.com/cities/{full_location}/{url_slug}"
                 print(f"    ✗ Venue not found, trying fallback: {old_url}")
 
-                self.page.goto(old_url, wait_until='load', timeout=30000)
+                self.page.goto(old_url, wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
                 self._add_human_behavior(self.page)
 
                 # Check again
@@ -1185,9 +1185,9 @@ class ResyBrowserClient:
             print(f"    Navigating to: {url}")
 
             try:
-                self.page.goto(url, wait_until='load', timeout=30000)
+                self.page.goto(url, wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
             except PlaywrightTimeoutError:
-                print(f"    ⚠️  Page load timeout (30s) — waiting for slots anyway...")
+                print(f"    ⚠️  Page load timeout — waiting for slots anyway...")
 
             # Wait for availability calendar to fully load
             print(f"    Waiting for availability calendar to load...")
@@ -1404,9 +1404,9 @@ class ResyBrowserClient:
             else:
                 print(f"     Navigating to: {venue_slug} on {date}")
                 try:
-                    self.page.goto(url, wait_until='load', timeout=30000)
+                    self.page.goto(url, wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
                 except PlaywrightTimeoutError:
-                    print(f"     ⚠️  Page load timeout (30s) — waiting for slots anyway...")
+                    print(f"     ⚠️  Page load timeout — waiting for slots anyway...")
 
             # Wait for availability calendar if we just navigated
             if needs_navigation:

@@ -767,6 +767,36 @@ Your reservation has been successfully booked.
 *Booked via your AI Reservation Agent*
 """
 
+    def _repair_history(self):
+        """Remove orphaned tool_use messages that lack corresponding tool_result.
+
+        When an SSE connection drops mid-tool-execution, the conversation history
+        can end with an assistant message containing tool_use blocks but no
+        subsequent user message with tool_result blocks. This causes Claude API
+        to reject the next request with a 400 error. Fix by removing the
+        trailing assistant message (and any orphaned content after it).
+        """
+        if len(self.conversation_history) < 2:
+            return
+
+        last_msg = self.conversation_history[-1]
+        if last_msg.get("role") != "assistant":
+            return
+
+        content = last_msg.get("content", [])
+        if not isinstance(content, list):
+            return
+
+        has_tool_use = any(
+            (isinstance(b, dict) and b.get("type") == "tool_use") or
+            (hasattr(b, "type") and b.type == "tool_use")
+            for b in content
+        )
+
+        if has_tool_use:
+            logger.warning("Repairing conversation history: removing orphaned tool_use message")
+            self.conversation_history.pop()
+
     def run(self, user_message, max_iterations=10, event_callback=None):
         """
         Run the agent with a user message.
@@ -792,6 +822,10 @@ Your reservation has been successfully booked.
         def emit(event_type, data=None):
             if event_callback:
                 event_callback(event_type, data or {})
+
+        # Repair conversation history if previous request left orphaned tool_use blocks
+        # (happens when SSE connection drops mid-tool-execution)
+        self._repair_history()
 
         # Add user message to history
         self.add_to_history("user", user_message)
