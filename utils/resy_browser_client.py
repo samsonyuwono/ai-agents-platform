@@ -439,7 +439,7 @@ class ResyBrowserClient:
 
         try:
             # Navigate to Resy homepage
-            self.page.goto('https://resy.com', wait_until='load', timeout=30000)
+            self.page.goto('https://resy.com', wait_until='domcontentloaded', timeout=Settings.RESY_BROWSER_TIMEOUT_MS)
             self._add_human_behavior(self.page)
 
             # Check if already logged in (no login button present)
@@ -580,9 +580,9 @@ class ResyBrowserClient:
             if not clicked:
                 raise Exception("Could not find submit button")
 
-            # Wait for navigation/login to complete
+            # Wait for navigation/login to complete (longer for proxy latency)
             print("    Waiting for login to complete...")
-            time.sleep(3)  # Give time for authentication
+            time.sleep(8)  # Give time for authentication (proxy adds latency)
 
             # Check for success message first (Resy shows "You are all set" modal)
             login_success_selectors = [
@@ -614,6 +614,23 @@ class ResyBrowserClient:
                         print(f"    Found user indicator: {selector}")
                         is_logged_in = True
                         break
+
+            # Check if login modal has closed (modal disappearing = successful login)
+            if not is_logged_in:
+                login_modal_selectors = [
+                    'input[type="password"]:visible',
+                    'text="Log in with email & password"',
+                    'text="Use email and password instead"',
+                ]
+                modal_still_visible = False
+                for selector in login_modal_selectors:
+                    if self.page.locator(selector).count() > 0:
+                        modal_still_visible = True
+                        break
+
+                if not modal_still_visible:
+                    print("    Login modal closed — login succeeded")
+                    is_logged_in = True
 
             # Check for actual error messages (not just any alert)
             if not is_logged_in:

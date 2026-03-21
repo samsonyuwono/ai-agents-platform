@@ -297,13 +297,14 @@ IMPORTANT BEHAVIORS:
             }
         ]
 
-    def execute_tool(self, tool_name, tool_input):
+    def execute_tool(self, tool_name, tool_input, emit=None):
         """
         Execute tool calls from Claude.
 
         Args:
             tool_name: Name of the tool to execute
             tool_input: Dictionary of tool input parameters
+            emit: Optional callback for progress events
 
         Returns:
             Tool execution result as dictionary
@@ -353,8 +354,12 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "search_resy_by_cuisine":
+            cuisine = tool_input.get("cuisine", "")
+            if emit:
+                emit("progress", {"message": f"Searching for {cuisine} restaurants... This may take a moment."})
+
             cuisine_args = {
-                "cuisine": tool_input.get("cuisine"),
+                "cuisine": cuisine,
                 "neighborhood": tool_input.get("neighborhood"),
                 "location": tool_input.get("location", "ny"),
                 "date": tool_input.get("date"),
@@ -415,8 +420,11 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "check_resy_availability":
+            venue_id = tool_input["venue_id"]
+            if emit:
+                emit("progress", {"message": f"Checking availability for {venue_id}..."})
             avail_args = {
-                "venue_id": tool_input["venue_id"],
+                "venue_id": venue_id,
                 "date": tool_input["date"],
                 "party_size": tool_input["party_size"]
             }
@@ -455,6 +463,8 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "make_resy_reservation":
+            if emit:
+                emit("progress", {"message": "Booking your reservation... This may take a moment."})
             reservation_args = {
                 "config_id": tool_input["config_id"],
                 "date": tool_input["date"],
@@ -518,6 +528,8 @@ IMPORTANT BEHAVIORS:
             return result
 
         elif tool_name == "view_my_reservations":
+            if emit:
+                emit("progress", {"message": "Loading your reservations..."})
             try:
                 reservations = self.resy_client.get_reservations()
             except Exception as e:
@@ -815,7 +827,7 @@ Your reservation has been successfully booked.
                         emit("tool_call", {"tool": tool_name, "input": tool_input})
 
                         # Execute the tool
-                        result = self.execute_tool(tool_name, tool_input)
+                        result = self.execute_tool(tool_name, tool_input, emit=emit)
 
                         emit("tool_result", {"tool": tool_name, "result": result})
 
