@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -56,9 +57,9 @@ async def chat(body: ChatRequest, user: AuthUser = Depends(require_auth)):
 
         while True:
             try:
-                event_type, data = await asyncio.wait_for(event_queue.get(), timeout=15)
+                event_type, data = await asyncio.wait_for(event_queue.get(), timeout=5)
             except asyncio.TimeoutError:
-                yield ": keepalive\n\n"
+                yield _sse_event("keepalive", {"ts": int(time.time())})
                 continue
 
             yield _sse_event(event_type, data)
