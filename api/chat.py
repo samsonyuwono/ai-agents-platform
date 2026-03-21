@@ -59,6 +59,7 @@ async def chat(body: ChatRequest, user: AuthUser = Depends(require_auth)):
             try:
                 event_type, data = await asyncio.wait_for(event_queue.get(), timeout=5)
             except asyncio.TimeoutError:
+                logger.debug("Sending keepalive at %d", int(time.time()))
                 yield _sse_event("keepalive", {"ts": int(time.time())})
                 continue
 
