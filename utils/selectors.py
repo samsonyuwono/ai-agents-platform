@@ -75,8 +75,9 @@ class ResySelectors:
         '[class*="Map--container"]', '[id*="map" i]',
     ]
     SEARCH_HERE_BUTTON = [
-        'button:has-text("Search Here")', 'button:has-text("Search here")',
-        'button:has-text("Search this area")', '[class*="SearchHere"]',
+        'button.update-map', 'button:has-text("Search Here")',
+        'button:has-text("Search here")', 'button:has-text("Search this area")',
+        '[class*="SearchHere"]',
     ]
 
     # Search results page
