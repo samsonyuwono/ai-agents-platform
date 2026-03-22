@@ -297,13 +297,14 @@ IMPORTANT BEHAVIORS:
             }
         ]
 
-    def execute_tool(self, tool_name, tool_input):
+    def execute_tool(self, tool_name, tool_input, emit=None):
         """
         Execute tool calls from Claude.
 
         Args:
             tool_name: Name of the tool to execute
             tool_input: Dictionary of tool input parameters
+            emit: Optional callback for progress events
 
         Returns:
             Tool execution result as dictionary
@@ -353,8 +354,12 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "search_resy_by_cuisine":
+            cuisine = tool_input.get("cuisine", "")
+            if emit:
+                emit("progress", {"message": f"Searching for {cuisine} restaurants... This may take a moment."})
+
             cuisine_args = {
-                "cuisine": tool_input.get("cuisine"),
+                "cuisine": cuisine,
                 "neighborhood": tool_input.get("neighborhood"),
                 "location": tool_input.get("location", "ny"),
                 "date": tool_input.get("date"),
@@ -415,8 +420,11 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "check_resy_availability":
+            venue_id = tool_input["venue_id"]
+            if emit:
+                emit("progress", {"message": f"Checking availability for {venue_id}..."})
             avail_args = {
-                "venue_id": tool_input["venue_id"],
+                "venue_id": venue_id,
                 "date": tool_input["date"],
                 "party_size": tool_input["party_size"]
             }
@@ -455,6 +463,8 @@ IMPORTANT BEHAVIORS:
                 }
 
         elif tool_name == "make_resy_reservation":
+            if emit:
+                emit("progress", {"message": "Booking your reservation... This may take a moment."})
             reservation_args = {
                 "config_id": tool_input["config_id"],
                 "date": tool_input["date"],
@@ -518,6 +528,8 @@ IMPORTANT BEHAVIORS:
             return result
 
         elif tool_name == "view_my_reservations":
+            if emit:
+                emit("progress", {"message": "Loading your reservations..."})
             try:
                 reservations = self.resy_client.get_reservations()
             except Exception as e:
@@ -755,6 +767,36 @@ Your reservation has been successfully booked.
 *Booked via your AI Reservation Agent*
 """
 
+    def _repair_history(self):
+        """Remove orphaned tool_use messages that lack corresponding tool_result.
+
+        When an SSE connection drops mid-tool-execution, the conversation history
+        can end with an assistant message containing tool_use blocks but no
+        subsequent user message with tool_result blocks. This causes Claude API
+        to reject the next request with a 400 error. Fix by removing the
+        trailing assistant message (and any orphaned content after it).
+        """
+        if len(self.conversation_history) < 2:
+            return
+
+        last_msg = self.conversation_history[-1]
+        if last_msg.get("role") != "assistant":
+            return
+
+        content = last_msg.get("content", [])
+        if not isinstance(content, list):
+            return
+
+        has_tool_use = any(
+            (isinstance(b, dict) and b.get("type") == "tool_use") or
+            (hasattr(b, "type") and b.type == "tool_use")
+            for b in content
+        )
+
+        if has_tool_use:
+            logger.warning("Repairing conversation history: removing orphaned tool_use message")
+            self.conversation_history.pop()
+
     def run(self, user_message, max_iterations=10, event_callback=None):
         """
         Run the agent with a user message.
@@ -780,6 +822,10 @@ Your reservation has been successfully booked.
         def emit(event_type, data=None):
             if event_callback:
                 event_callback(event_type, data or {})
+
+        # Repair conversation history if previous request left orphaned tool_use blocks
+        # (happens when SSE connection drops mid-tool-execution)
+        self._repair_history()
 
         # Add user message to history
         self.add_to_history("user", user_message)
@@ -815,7 +861,7 @@ Your reservation has been successfully booked.
                         emit("tool_call", {"tool": tool_name, "input": tool_input})
 
                         # Execute the tool
-                        result = self.execute_tool(tool_name, tool_input)
+                        result = self.execute_tool(tool_name, tool_input, emit=emit)
 
                         emit("tool_result", {"tool": tool_name, "result": result})
 

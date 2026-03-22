@@ -67,8 +67,8 @@ class Settings:
     WEB_CORS_ORIGINS = os.environ.get("WEB_CORS_ORIGINS", "http://localhost:5173")
 
     # Model Configuration
-    DEFAULT_MODEL = "claude-sonnet-4-20250514"
-    MAX_TOKENS = 4096
+    DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+    MAX_TOKENS = 1024
 
     # Paths
     NEWS_FOLDER = "news"

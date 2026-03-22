@@ -216,15 +216,20 @@ class TestExecuteToolSearch:
         assert result['success'] is True
 
     def test_search_by_cuisine_no_browser_method(self, agent):
-        """Test cuisine search fails gracefully without browser client."""
+        """Test cuisine search falls back to threading fallback without browser method."""
         # Remove search_by_cuisine method to simulate API-only client
         del agent.resy_client.search_by_cuisine
+
+        agent._handle_threading_fallback = MagicMock(return_value={
+            'success': False,
+            'error': 'Browser client not available'
+        })
 
         result = agent.execute_tool('search_resy_by_cuisine',
                                     {'cuisine': 'Japanese'})
 
+        agent._handle_threading_fallback.assert_called_once()
         assert result['success'] is False
-        assert 'browser mode' in result['message']
 
     def test_search_by_cuisine_success(self, agent):
         """Test cuisine search returns formatted results with time slots."""
