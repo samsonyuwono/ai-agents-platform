@@ -767,8 +767,9 @@ class ResyBrowserClient:
                 self._pan_map_by_drag(map_elem, lat, lng)
 
             # Wait for and click "Search Here" button
+            time.sleep(1)  # Extra buffer for map pan animation to trigger button
             search_btn = SelectorHelper.find_element(
-                self.page, ResySelectors.SEARCH_HERE_BUTTON, timeout=3000
+                self.page, ResySelectors.SEARCH_HERE_BUTTON, timeout=5000
             )
             if search_btn:
                 search_btn.click()
