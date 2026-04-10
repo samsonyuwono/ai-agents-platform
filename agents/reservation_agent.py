@@ -355,6 +355,17 @@ IMPORTANT BEHAVIORS:
 
         elif tool_name == "search_resy_by_cuisine":
             cuisine = tool_input.get("cuisine", "")
+            neighborhood = tool_input.get("neighborhood")
+
+            # Validate neighborhood resolves before launching browser (saves 15-30s)
+            if neighborhood:
+                from utils.neighborhood_coords import get_neighborhood_coords
+                if not get_neighborhood_coords(neighborhood, tool_input.get("location", "ny")):
+                    return {
+                        'success': False,
+                        'message': f"Unknown neighborhood '{neighborhood}'. Try a well-known NYC neighborhood like 'West Village', 'SoHo', 'Upper East Side', 'Times Square', etc."
+                    }
+
             if emit:
                 emit("progress", {"message": f"Searching for {cuisine} restaurants... This may take a moment."})
 

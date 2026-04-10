@@ -418,13 +418,28 @@ class TestEnsureAuthenticated:
         client, _ = _make_browser_client(is_authenticated=False)
         client._get_storage_state_path = MagicMock(return_value=None)
         client._load_cookies = MagicMock(return_value=True)
+        client._is_session_valid = MagicMock(return_value=True)
         client._login = MagicMock()
 
         client._ensure_authenticated()
 
         client._load_cookies.assert_called_once()
+        client._is_session_valid.assert_called_once()
         client._login.assert_not_called()
         assert client.is_authenticated is True
+
+    def test_relogins_when_stored_session_expired(self):
+        client, _ = _make_browser_client(is_authenticated=False)
+        client._get_storage_state_path = MagicMock(return_value=None)
+        client._load_cookies = MagicMock(return_value=True)
+        client._is_session_valid = MagicMock(return_value=False)
+        client._login = MagicMock()
+        client._save_session = MagicMock()
+
+        client._ensure_authenticated()
+
+        client._is_session_valid.assert_called_once()
+        client._login.assert_called_once()
 
     def test_calls_login_when_no_cookies(self):
         client, _ = _make_browser_client(is_authenticated=False)
@@ -442,6 +457,7 @@ class TestEnsureAuthenticated:
         client._launch_browser = MagicMock()
         client._get_storage_state_path = MagicMock(return_value=None)
         client._load_cookies = MagicMock(return_value=True)
+        client._is_session_valid = MagicMock(return_value=True)
 
         client._ensure_authenticated()
 
@@ -1270,9 +1286,9 @@ class TestPanMapToNeighborhood:
             result = client._pan_map_to_neighborhood('Upper East Side')
 
         assert result is True
-        # Verify JS evaluate was called with the pan script and UES coords
-        client.page.evaluate.assert_called_once()
-        call_args = client.page.evaluate.call_args
+        # Verify JS evaluate was called: first for pan, second for re-firing events
+        assert client.page.evaluate.call_count == 2
+        call_args = client.page.evaluate.call_args_list[0]
         coords = call_args[0][1]  # second positional arg: [lat, lng]
         assert 40.76 < coords[0] < 40.79  # UES latitude
 
