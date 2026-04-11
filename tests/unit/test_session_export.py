@@ -172,9 +172,10 @@ class TestEnsureAuthenticatedPrefersStorageState:
         client.cookie_file = Path('/tmp/fake_cookies.json')
 
         with patch.object(client, '_get_storage_state_path', return_value='/tmp/fake_state.json'):
-            with patch.object(client, '_load_cookies') as mock_load:
-                with patch.object(client, '_login') as mock_login:
-                    client._ensure_authenticated()
+            with patch.object(client, '_is_session_valid', return_value=True):
+                with patch.object(client, '_load_cookies') as mock_load:
+                    with patch.object(client, '_login') as mock_login:
+                        client._ensure_authenticated()
 
         assert client.is_authenticated is True
         mock_load.assert_not_called()
@@ -200,8 +201,9 @@ class TestEnsureAuthenticatedPrefersStorageState:
 
         with patch.object(client, '_get_storage_state_path', return_value=None):
             with patch.object(client, '_load_cookies', return_value=True) as mock_load:
-                with patch.object(client, '_login') as mock_login:
-                    client._ensure_authenticated()
+                with patch.object(client, '_is_session_valid', return_value=True):
+                    with patch.object(client, '_login') as mock_login:
+                        client._ensure_authenticated()
 
         assert client.is_authenticated is True
         mock_load.assert_called_once()

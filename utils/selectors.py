@@ -132,21 +132,22 @@ class SelectorHelper:
     @staticmethod
     def find_element(page, selectors: list, timeout: int = 5000):
         """
-        Try multiple selectors until one is found.
+        Try multiple selectors until one is found, waiting up to timeout.
 
         Args:
             page: Playwright page object
             selectors: List of selector strings
-            timeout: Timeout per selector in milliseconds
+            timeout: Total timeout budget in milliseconds (split across selectors)
 
         Returns:
             Locator for first matching element, or None
         """
+        per_selector_timeout = max(timeout // len(selectors), 500) if selectors else timeout
         for selector in selectors:
             try:
                 elem = page.locator(selector).first
-                if elem.count() > 0:
-                    return elem
-            except:
+                elem.wait_for(state="attached", timeout=per_selector_timeout)
+                return elem
+            except Exception:
                 continue
         return None

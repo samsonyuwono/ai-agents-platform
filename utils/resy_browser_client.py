@@ -408,18 +408,16 @@ class ResyBrowserClient:
             self._launch_browser()
 
         # Storage state was already loaded during _launch_browser() via new_context()
-        if self._get_storage_state_path():
-            print("     ✓ Storage state loaded, assuming authenticated")
-            print("     → (Will validate lazily if needed)")
-            self.is_authenticated = True
-            return
-
-        # Fall back to legacy cookie loading
-        if self._load_cookies():
-            print("     ✓ Loaded session cookies, assuming authenticated")
-            print("     → (Will validate lazily if needed)")
-            self.is_authenticated = True
-            return
+        has_stored_session = self._get_storage_state_path() or self._load_cookies()
+        if has_stored_session:
+            print("     ✓ Stored session loaded, validating...")
+            session_status = self._is_session_valid()
+            if session_status is True:
+                print("     ✓ Session is valid")
+                self.is_authenticated = True
+                return
+            else:
+                print("     ✗ Stored session expired, re-logging in...")
 
         # No session - perform fresh login
         self._login()
@@ -707,6 +705,8 @@ class ResyBrowserClient:
         // Walk up fiber tree to find the Google Maps instance in React state
         let fiber = container[reactKey];
         let depth = 0;
+        let mapInstance = null;
+        let foundVia = null;
         while (fiber && depth < 20) {
             if (fiber.memoizedState) {
                 let state = fiber.memoizedState;
@@ -716,30 +716,47 @@ class ResyBrowserClient:
                     if (state.queue && state.queue.lastRenderedState) {
                         const s = state.queue.lastRenderedState;
                         if (s && typeof s === 'object' && typeof s.panTo === 'function') {
-                            s.panTo({lat, lng});
-                            return 'react_state';
+                            mapInstance = s;
+                            foundVia = 'react_state';
+                            break;
                         }
                     }
                     // Check memoizedState directly (useRef / useMemo)
                     const ms = state.memoizedState;
                     if (ms && typeof ms === 'object') {
                         if (typeof ms.panTo === 'function') {
-                            ms.panTo({lat, lng});
-                            return 'react_memo';
+                            mapInstance = ms;
+                            foundVia = 'react_memo';
+                            break;
                         }
                         if (ms.current && typeof ms.current.panTo === 'function') {
-                            ms.current.panTo({lat, lng});
-                            return 'react_ref';
+                            mapInstance = ms.current;
+                            foundVia = 'react_ref';
+                            break;
                         }
                     }
                     state = state.next;
                     sd++;
                 }
             }
+            if (mapInstance) break;
             fiber = fiber.return;
             depth++;
         }
-        return null;
+        if (!mapInstance) return null;
+
+        // Pan the map
+        mapInstance.panTo({lat, lng});
+
+        // Explicitly fire Google Maps events so Resy's React listener
+        // detects the move. panTo() alone doesn't reliably trigger these
+        // events in Playwright's Chromium.
+        if (typeof google !== 'undefined' && google.maps && google.maps.event) {
+            google.maps.event.trigger(mapInstance, 'bounds_changed');
+            google.maps.event.trigger(mapInstance, 'idle');
+        }
+
+        return foundVia;
     }"""
 
     def _pan_map_to_neighborhood(self, neighborhood: str, location: str = 'ny') -> bool:
@@ -783,11 +800,75 @@ class ResyBrowserClient:
                 print(f"     ⚠️  Google Maps API not accessible, falling back to mouse drag")
                 self._pan_map_by_drag(map_elem, lat, lng)
 
+            # Wait for pan animation, then re-fire idle to ensure button renders
+            time.sleep(2)
+            self.page.evaluate("""() => {
+                const container = document.querySelector('.MapContainer');
+                if (!container) return;
+                const rk = Object.keys(container).find(
+                    k => k.startsWith('__reactFiber') || k.startsWith('__reactInternalInstance')
+                );
+                if (!rk) return;
+                let fiber = container[rk];
+                let d = 0;
+                while (fiber && d < 20) {
+                    if (fiber.memoizedState) {
+                        let st = fiber.memoizedState;
+                        let sd = 0;
+                        while (st && sd < 10) {
+                            const check = (obj) => obj && typeof obj === 'object' && typeof obj.panTo === 'function';
+                            if (st.queue && check(st.queue.lastRenderedState)) {
+                                if (typeof google !== 'undefined' && google.maps && google.maps.event) {
+                                    google.maps.event.trigger(st.queue.lastRenderedState, 'bounds_changed');
+                                    google.maps.event.trigger(st.queue.lastRenderedState, 'idle');
+                                }
+                                return;
+                            }
+                            const ms = st.memoizedState;
+                            if (check(ms)) {
+                                if (typeof google !== 'undefined' && google.maps && google.maps.event) {
+                                    google.maps.event.trigger(ms, 'bounds_changed');
+                                    google.maps.event.trigger(ms, 'idle');
+                                }
+                                return;
+                            }
+                            if (ms && ms.current && check(ms.current)) {
+                                if (typeof google !== 'undefined' && google.maps && google.maps.event) {
+                                    google.maps.event.trigger(ms.current, 'bounds_changed');
+                                    google.maps.event.trigger(ms.current, 'idle');
+                                }
+                                return;
+                            }
+                            st = st.next;
+                            sd++;
+                        }
+                    }
+                    fiber = fiber.return;
+                    d++;
+                }
+            }""")
+
             # Wait for and click "Search Here" button
-            time.sleep(1)  # Extra buffer for map pan animation to trigger button
             search_btn = SelectorHelper.find_element(
                 self.page, ResySelectors.SEARCH_HERE_BUTTON, timeout=5000
             )
+
+            # Fallback: nudge the map with a small drag to force the button
+            if not search_btn and map_elem:
+                print(f"     ⚠️  'Search Here' not found, nudging map to trigger it...")
+                box = map_elem.bounding_box()
+                if box:
+                    cx = box['x'] + box['width'] / 2
+                    cy = box['y'] + box['height'] / 2
+                    self.page.mouse.move(cx, cy)
+                    self.page.mouse.down()
+                    self.page.mouse.move(cx + 5, cy + 5, steps=3)
+                    self.page.mouse.up()
+                    time.sleep(1)
+                    search_btn = SelectorHelper.find_element(
+                        self.page, ResySelectors.SEARCH_HERE_BUTTON, timeout=5000
+                    )
+
             if search_btn:
                 search_btn.click()
                 print(f"     ✓ Clicked 'Search Here' button")
@@ -918,7 +999,10 @@ class ResyBrowserClient:
 
             # Pan Google Maps to the target neighborhood and reload results
             if neighborhood:
-                self._pan_map_to_neighborhood(neighborhood, location)
+                pan_success = self._pan_map_to_neighborhood(neighborhood, location)
+                if not pan_success:
+                    print(f"     ⚠️  Neighborhood '{neighborhood}' search failed — returning empty to avoid wrong results")
+                    return []
 
             # Scrape venue cards from search results
             venues = []

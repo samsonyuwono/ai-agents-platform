@@ -1,5 +1,6 @@
 """NYC neighborhood coordinates for map-based restaurant search."""
 
+from difflib import get_close_matches
 from typing import Dict, Optional, Tuple
 
 # NYC default center (Union Square area)
@@ -87,6 +88,13 @@ NEIGHBORHOOD_ALIASES: Dict[str, str] = {
     'the village': 'greenwich village',
     'flatiron district': 'flatiron',
     'gramercy park': 'gramercy',
+    'upper east': 'upper east side',
+    'upper west': 'upper west side',
+    'lower east': 'lower east side',
+    'times sq': 'times square',
+    'ft greene': 'fort greene',
+    'crown hts': 'crown heights',
+    'wash heights': 'washington heights',
     'nyc': 'manhattan',
     'new york': 'manhattan',
 }
@@ -119,4 +127,12 @@ def get_neighborhood_coords(name: str, city: str = 'ny') -> Optional[Tuple[float
         return None
 
     canonical = normalize_neighborhood_name(name)
-    return NYC_NEIGHBORHOODS.get(canonical)
+    coords = NYC_NEIGHBORHOODS.get(canonical)
+    if coords:
+        return coords
+
+    # Fuzzy fallback for close matches (e.g., "Time Square" → "times square")
+    matches = get_close_matches(canonical, list(NYC_NEIGHBORHOODS.keys()), n=1, cutoff=0.6)
+    if matches:
+        return NYC_NEIGHBORHOODS[matches[0]]
+    return None
